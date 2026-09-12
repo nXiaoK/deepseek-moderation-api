@@ -145,6 +145,7 @@ type AuditLog struct {
 	Confidence        *float64  `json:"confidence"`
 	Threshold         float64   `json:"threshold"`
 	Reason            string    `json:"reason"`
+	ModelOutput       string    `json:"model_output,omitempty"`
 	ErrorCode         string    `json:"error_code"`
 	LatencyMS         int64     `json:"latency_ms"`
 	Usage             Usage     `json:"usage"`

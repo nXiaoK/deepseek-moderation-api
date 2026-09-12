@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Server struct {
@@ -613,6 +614,13 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 var secretPattern = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]+|bearer\s+[^\s]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b\d{11,}\b)`)
 
 func redact(s string) string { return secretPattern.ReplaceAllString(s, "[隐去]") }
+func storedModelOutput(s string) string {
+	s = redact(s)
+	if n := utf8.RuneCountInString(s); n > 4096 {
+		s = string([]rune(s)[:4096]) + "…"
+	}
+	return s
+}
 func (s *Server) CleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

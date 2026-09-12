@@ -82,6 +82,7 @@ export interface AuditLog {
   confidence: number | null;
   threshold: number;
   reason: string;
+  model_output?: string;
   error_code: string;
   latency_ms: number;
   usage: AuditResponse["usage"];

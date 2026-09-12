@@ -99,31 +99,61 @@ const credentialReady = computed(() =>
       c.provider === (config.value?.provider || "deepseek"),
   ),
 );
-const preview = computed(() =>
-  JSON.stringify(
-    {
-      model: config.value?.model,
-      ...(config.value?.provider === "grok_via_sub2api"
-        ? {}
-        : { thinking: { type: "disabled" } }),
-      stream: false,
-      temperature: 0,
-      max_tokens: config.value?.max_tokens,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: config.value?.prompt },
-        {
-          role: "user",
-          content: `<user_input>${testInput.value}</user_input>`,
+const preview = computed(() => {
+  const grok = config.value?.provider === "grok_via_sub2api";
+  return JSON.stringify(
+    grok
+      ? {
+          model: config.value?.model,
+          stream: true,
+          temperature: 0,
+          max_output_tokens: config.value?.max_tokens,
+          text: { format: { type: "json_object" } },
+          reasoning: { effort: "none" },
+          instructions: config.value?.prompt,
+          input: `<user_input>${testInput.value}</user_input>`,
+        }
+      : {
+          model: config.value?.model,
+          thinking: { type: "disabled" },
+          stream: false,
+          temperature: 0,
+          max_tokens: config.value?.max_tokens,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: config.value?.prompt },
+            {
+              role: "user",
+              content: `<user_input>${testInput.value}</user_input>`,
+            },
+          ],
         },
-      ],
-    },
     null,
     2,
-  ),
-);
+  );
+});
 const time = (v: string) =>
   new Date(v).toLocaleString("zh-CN", { hour12: false });
+const modelOutputText = (log: AuditLog) => {
+  if (log.model_output) {
+    try {
+      return JSON.stringify(JSON.parse(log.model_output), null, 2);
+    } catch {
+      return log.model_output;
+    }
+  }
+  if (log.confidence != null && log.reason) {
+    return JSON.stringify(
+      { confidence: log.confidence, reason: log.reason },
+      null,
+      2,
+    );
+  }
+  return "";
+};
+const detailModelOutput = computed(() =>
+  detail.value ? modelOutputText(detail.value) : "",
+);
 const policyLabel = (id: string) =>
   policies.value.find((p) => p.id === id)?.name || id;
 const clientLabel = (id: string) =>
@@ -820,7 +850,9 @@ window.addEventListener("beforeunload", (e) => {
             >
               <p>
                 填写 sub2api 提供的普通 API Key 和 Grok 模型名，直接调用
-                /v1/chat/completions。无需管理员登录、OAuth 授权或专用服务绑定。
+                /v1/responses 流式接口。审核对外仍返回完整
+                /v1/moderations JSON。无需管理员登录、OAuth
+                授权或专用服务绑定。
               </p>
               <button
                 @click="probeConnection"
@@ -1546,9 +1578,24 @@ window.addEventListener("beforeunload", (e) => {
         <dt>耗时 / Tokens</dt>
         <dd>
           {{ detail.latency_ms }} ms /
-          {{ detail.usage.reported ? detail.usage.total_tokens : "用量未返回" }}
+          <template v-if="detail.usage.reported">
+            {{ detail.usage.total_tokens }}
+            <small class="muted">
+              （输入 {{ detail.usage.prompt_tokens }} · 输出
+              {{ detail.usage.completion_tokens
+              }}<template v-if="detail.usage.reasoning_tokens"
+                > · 推理 {{ detail.usage.reasoning_tokens }}</template
+              >）
+            </small>
+          </template>
+          <template v-else>用量未返回</template>
         </dd>
       </dl>
+      <h3>模型返回</h3>
+      <pre v-if="detailModelOutput" class="input-detail">{{
+        detailModelOutput
+      }}</pre>
+      <p v-else class="hint">此请求没有保存模型返回内容。</p>
       <h3>审核输入</h3>
       <pre v-if="detail.input_stored" class="input-detail">{{
         detail.input

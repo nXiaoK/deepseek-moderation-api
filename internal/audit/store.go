@@ -486,6 +486,7 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 			return nil, 0, err
 		}
 		l.CreatedAt = created
+		l.ModelOutput = ""
 		logs = append(logs, l)
 	}
 	return logs, count, rows.Err()

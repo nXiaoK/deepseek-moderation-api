@@ -23,49 +23,55 @@ func NewEngine(concurrency int) *Engine {
 	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	return &Engine{Client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}, slots: make(chan struct{}, concurrency)}
 }
-func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string) (Assessment, Usage, error) {
+func upstreamCallError(err error, cfg PolicyConfig) error {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
+		return problem(504, "upstream_timeout", cfg.providerLabel()+" 审核超时")
+	}
+	return problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
+}
+func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string) (Assessment, Usage, string, error) {
 	if err := cfg.Validate(); err != nil {
-		return Assessment{}, Usage{}, problem(400, "invalid_config", err.Error())
+		return Assessment{}, Usage{}, "", problem(400, "invalid_config", err.Error())
 	}
 	select {
 	case e.slots <- struct{}{}:
 		defer func() { <-e.slots }()
 	default:
-		return Assessment{}, Usage{}, problem(503, "capacity_exceeded", "审核并发已满，请稍后重试")
+		return Assessment{}, Usage{}, "", problem(503, "capacity_exceeded", "审核并发已满，请稍后重试")
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
-	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "temperature": 0, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
 	if cfg.ProviderID() == ProviderGrok {
-		delete(payload, "thinking")
+		return e.assessGrok(ctx, cfg, key, input)
 	}
+	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "temperature": 0, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return Assessment{}, Usage{}, err
+		return Assessment{}, Usage{}, "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.chatURL(), bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.inferenceURL(), bytes.NewReader(raw))
 	if err != nil {
-		return Assessment{}, Usage{}, err
+		return Assessment{}, Usage{}, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 	attempt := Usage{Attempted: true}
 	res, err := e.Client.Do(req)
 	if err != nil {
-		var ne net.Error
-		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
-			return Assessment{}, attempt, problem(504, "upstream_timeout", cfg.providerLabel()+" 审核超时")
-		}
-		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
+		return Assessment{}, attempt, "", upstreamCallError(err, cfg)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
+		return Assessment{}, attempt, "", problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 65537))
-	if err != nil || len(body) > 65536 {
-		return Assessment{}, attempt, problem(502, "invalid_model_response", "模型响应超过上限或读取失败")
+	if err != nil {
+		return Assessment{}, attempt, "", upstreamCallError(err, cfg)
+	}
+	if len(body) > 65536 {
+		return Assessment{}, attempt, "", problem(502, "invalid_model_response", "模型响应超过上限或读取失败")
 	}
 	var out struct {
 		ID      string `json:"id"`
@@ -83,33 +89,33 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	if err = uniqueValue(dec, 0); err != nil {
-		return Assessment{}, attempt, problem(502, "invalid_model_response", "模型响应 JSON 无效")
+		return Assessment{}, attempt, "", problem(502, "invalid_model_response", "模型响应 JSON 无效")
 	}
 	if _, err = dec.Token(); err != io.EOF {
-		return Assessment{}, attempt, problem(502, "invalid_model_response", "模型响应包含多余内容")
+		return Assessment{}, attempt, "", problem(502, "invalid_model_response", "模型响应包含多余内容")
 	}
 	decodeErr := json.Unmarshal(body, &out)
 	usage := Usage{Attempted: true}
-	if cfg.ProviderID() == ProviderGrok {
-		usage = parseGrokUsage(out.Usage)
-	} else {
-		_ = json.Unmarshal(out.Usage, &usage)
-		usage.Attempted = true
-	}
+	_ = json.Unmarshal(out.Usage, &usage)
+	usage.Attempted = true
 	if len(out.ID) <= 200 {
 		usage.UpstreamRequestID = out.ID
 	}
 	if len(out.Model) <= 200 {
 		usage.ActualModel = out.Model
 	}
+	content := ""
+	if decodeErr == nil && len(out.Choices) == 1 {
+		content = out.Choices[0].Message.Content
+	}
 	if decodeErr != nil || len(out.Choices) != 1 || out.Choices[0].Finish != "stop" || out.Choices[0].Message.Refusal != nil {
-		return Assessment{}, usage, problem(502, "invalid_model_response", "模型未完整返回审核结果")
+		return Assessment{}, usage, content, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
-	assessment, err := ParseAssessment([]byte(out.Choices[0].Message.Content))
+	assessment, err := ParseAssessment([]byte(content))
 	if err != nil {
-		return Assessment{}, usage, problem(502, "invalid_model_response", err.Error())
+		return Assessment{}, usage, content, problem(502, "invalid_model_response", err.Error())
 	}
-	return assessment, usage, nil
+	return assessment, usage, content, nil
 }
 
 func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, version int, client, kind, text string) (Response, error) {
@@ -119,6 +125,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 
 	var result Assessment
 	var usage Usage
+	var modelOutput string
 	var entry *CostReservation
 	var cost *CostView
 	cacheHit := false
@@ -140,8 +147,12 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 		if err != nil {
 			return Response{}, err
 		}
-		if !cacheHit {
-			result, usage, err = s.Engine.Assess(ctx, cfg, key, text)
+		if cacheHit {
+			if raw, marshalErr := json.Marshal(result); marshalErr == nil {
+				modelOutput = string(raw)
+			}
+		} else {
+			result, usage, modelOutput, err = s.Engine.Assess(ctx, cfg, key, text)
 		}
 		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		var settleErr error
@@ -157,7 +168,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 		}
 	}
 	elapsed := time.Since(start).Milliseconds()
-	l := AuditLog{UpstreamRequestID: usage.UpstreamRequestID, Provider: cfg.ProviderID(), ID: id, Kind: kind, PolicyID: p.ID, PolicyVersion: version, ClientID: client, Model: cfg.Model, Threshold: cfg.Threshold, LatencyMS: elapsed, Usage: usage, InputStored: cfg.StoreInput, CreatedAt: time.Now().UTC(), Cost: cost, CacheHit: cacheHit}
+	l := AuditLog{UpstreamRequestID: usage.UpstreamRequestID, Provider: cfg.ProviderID(), ID: id, Kind: kind, PolicyID: p.ID, PolicyVersion: version, ClientID: client, Model: cfg.Model, Threshold: cfg.Threshold, LatencyMS: elapsed, Usage: usage, InputStored: cfg.StoreInput, CreatedAt: time.Now().UTC(), Cost: cost, CacheHit: cacheHit, ModelOutput: storedModelOutput(modelOutput)}
 	if err == nil {
 		l.Confidence = &result.Confidence
 		l.Flagged = result.Confidence >= cfg.Threshold

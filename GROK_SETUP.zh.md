@@ -1,6 +1,6 @@
 # Grok：直接使用 sub2api 提供的模型 API
 
-当前方式就是普通 OpenAI 兼容调用：审核系统填写 sub2api 提供的 Base URL、普通 API Key 和 Grok 模型名，然后请求 `/v1/chat/completions`。
+当前方式就是普通 OpenAI 兼容调用：审核系统填写 sub2api 提供的 Base URL、普通 API Key 和 Grok 模型名，然后请求 `/v1/responses` 流式接口。对外审核接口仍是一次返回完整 JSON 的 `/v1/moderations`。
 
 不调用 sub2api 的 auth/OAuth/管理员 API，不要求它部署专用审核入口，也不要求 `GROK_AUDIT_SERVICE_BINDINGS`。之前的专用入口方案已撤回并保留在 Git 历史中。
 
@@ -26,26 +26,26 @@ AUDIT_SUB2API_ORIGINS=https://sub2api.example.com
 实际请求结构：
 
 ```http
-POST /v1/chat/completions
+POST /v1/responses
 Authorization: Bearer <sub2api 普通 API Key>
 Content-Type: application/json
+Accept: text/event-stream
 ```
 
 ```json
 {
   "model": "grok-4.6",
-  "stream": false,
+  "stream": true,
   "temperature": 0,
-  "max_tokens": 512,
-  "response_format": {"type": "json_object"},
-  "messages": [
-    {"role": "system", "content": "后台保存的原审核提示词"},
-    {"role": "user", "content": "<user_input>待审核内容</user_input>"}
-  ]
+  "max_output_tokens": 512,
+  "text": {"format": {"type": "json_object"}},
+  "reasoning": {"effort": "none"},
+  "instructions": "后台保存的原审核提示词",
+  "input": "<user_input>待审核内容</user_input>"
 }
 ```
 
-不传 DeepSeek 的 `thinking` 参数，不要求专用响应头。审核系统不执行模型工具调用，Grok JSON 结果继续严格解析为 `confidence` / `reason`；普通网关自身的模型映射、账号管理和路由逻辑保持原样。
+不传 DeepSeek 的 `thinking` 参数，不要求专用响应头。审核分类不需要长推理，请求带 `reasoning.effort=none`，避免 Grok 先写几千个隐藏推理 tokens。若所用网关或模型拒绝 `none`，改用该网关支持的最低档（例如 `low`）或非推理型号。审核系统不执行模型工具调用，从 SSE（`response.output_text.delta` / `response.completed`）或非流式 Responses JSON 中组装文本，再严格解析为 `confidence` / `reason`。若网关忽略 `stream` 并返回普通 JSON，仍按 Responses 对象解析。普通网关自身的模型映射、账号管理和路由逻辑保持原样。sub2api 需要提供 `/v1/responses`；仅实现 `/v1/chat/completions` 的网关不能用于 Grok。
 
 ## 3. 避免回接循环
 

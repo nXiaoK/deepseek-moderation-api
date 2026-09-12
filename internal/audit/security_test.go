@@ -21,6 +21,16 @@ func TestAssessmentContract(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	long := `{"confidence":0.95,"reason":"针对他人网站绕过Cloudflare/WAF/反爬批量抓取"}`
+	if _, err := ParseAssessment([]byte(long)); err == nil || err.Error() != "reason 为 29 字，超过 20 字上限" {
+		t.Fatal(err)
+	}
+}
+func TestStoredModelOutputRedactsSecrets(t *testing.T) {
+	got := storedModelOutput(`{"reason":"use sk-abc123xyz"}`)
+	if got == `{"reason":"use sk-abc123xyz"}` {
+		t.Fatal("secret not redacted")
+	}
 }
 func TestVaultAuthentication(t *testing.T) {
 	v, err := NewVault(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))

@@ -158,8 +158,14 @@ func ParseAssessment(raw []byte) (Assessment, error) {
 	if err := strictJSON(raw, &data); err != nil {
 		return Assessment{}, fmt.Errorf("审核结果不是符合协议的 JSON: %w", err)
 	}
-	if data.Confidence == nil || data.Reason == nil || *data.Confidence < 0 || *data.Confidence > 1 || utf8.RuneCountInString(*data.Reason) > 20 {
+	if data.Confidence == nil || data.Reason == nil {
 		return Assessment{}, errors.New("审核结果需包含 0～1 的 confidence 与最多 20 字的 reason")
+	}
+	if *data.Confidence < 0 || *data.Confidence > 1 {
+		return Assessment{}, errors.New("审核结果需包含 0～1 的 confidence 与最多 20 字的 reason")
+	}
+	if n := utf8.RuneCountInString(*data.Reason); n > 20 {
+		return Assessment{}, fmt.Errorf("reason 为 %d 字，超过 20 字上限", n)
 	}
 	return Assessment{*data.Confidence, *data.Reason}, nil
 }

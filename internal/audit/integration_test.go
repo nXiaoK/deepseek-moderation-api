@@ -192,9 +192,15 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	if items[0].ErrorCode == "" || items[0].Confidence != nil || items[0].Flagged {
 		t.Fatal("failure recorded as successful verdict")
 	}
+	if items[0].ModelOutput != "" {
+		t.Fatal("list included model output")
+	}
 	l, err := store.LogDetail(context.Background(), result.ID)
 	if err != nil || l.Input != request["input"] {
 		t.Fatal("encrypted input did not roundtrip", err)
+	}
+	if l.ModelOutput != `{"confidence":0.8,"reason":"测试命中"}` {
+		t.Fatal("model output missing", l.ModelOutput)
 	}
 	var cipher []byte
 	if err = store.DB.QueryRow("SELECT input_cipher FROM audit_requests WHERE id=$1", result.ID).Scan(&cipher); err != nil {
@@ -258,14 +264,14 @@ func TestEngineCancellationAndInvalidEnvelope(t *testing.T) {
 	engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) { <-r.Context().Done(); return nil, r.Context().Err() })}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	if _, _, err := engine.Assess(ctx, cfg, "test", "hello"); err == nil {
+	if _, _, _, err := engine.Assess(ctx, cfg, "test", "hello"); err == nil {
 		t.Fatal("cancelled request accepted")
 	}
 	for _, raw := range []string{`{"choices":[]}`, `{"choices":[{"finish_reason":"length","message":{"content":"{}"}}]}`, `{"choices":[{"finish_reason":"stop","message":{"content":""}}]}`} {
 		engine.Client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(raw))}, nil
 		})}
-		if _, _, err := engine.Assess(context.Background(), cfg, "test", "hello"); err == nil {
+		if _, _, _, err := engine.Assess(context.Background(), cfg, "test", "hello"); err == nil {
 			t.Fatal("invalid response accepted")
 		}
 	}
