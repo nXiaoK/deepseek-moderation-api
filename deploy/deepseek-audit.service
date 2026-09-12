@@ -1,0 +1,26 @@
+[Unit]
+Description=DeepSeek content audit API and admin console
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=audit
+Group=audit
+WorkingDirectory=/opt/deepseek-audit/current
+EnvironmentFile=/etc/deepseek-audit.env
+ExecStart=/opt/deepseek-audit/current/audit-server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

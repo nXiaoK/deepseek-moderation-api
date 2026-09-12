@@ -1,0 +1,498 @@
+package audit
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	_ "github.com/lib/pq"
+)
+
+//go:embed schema.sql
+var schema string
+
+//go:embed initial-prompt.txt
+var InitialPrompt string
+
+type Store struct {
+	DB    *sql.DB
+	Vault *Vault
+}
+
+func OpenStore(ctx context.Context, dsn string, vault *Vault) (*Store, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	if err = db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &Store{db, vault}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274901)"); err == nil {
+		_, err = tx.ExecContext(ctx, schema)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+func DefaultConfig() PolicyConfig {
+	return PolicyConfig{Prompt: InitialPrompt, Threshold: .8, Model: "deepseek-flash", BaseURL: "https://api.deepseek.com", TimeoutMS: 7000, MaxTokens: 512, RetentionDays: 30}
+}
+func (s *Store) Bootstrap(ctx context.Context, username, password string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274902)"); err != nil {
+		return err
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_users").Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if len(password) < 16 || len(password) > 256 || len(username) < 1 || len(username) > 80 {
+			return errors.New("first startup requires ADMIN_USER and ADMIN_PASSWORD (16–256 characters)")
+		}
+		hash, err := hashPassword(password)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO admin_users VALUES($1,$2)", username, hash); err != nil {
+			return err
+		}
+	}
+	raw, _ := json.Marshal(DefaultConfig())
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_policies(id,name,alias,draft) VALUES('abuse-default','网络滥用与人身伤害审核','abuse-audit-v1',$1) ON CONFLICT DO NOTHING`, string(raw)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*sql.Tx) error) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = fn(tx); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO admin_action_logs(username,action,resource_id) VALUES($1,$2,$3)", actor, action, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *Store) Policies(ctx context.Context) ([]Policy, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,alias,enabled,draft_revision,active_version,draft FROM audit_policies ORDER BY name,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Policy{}
+	for rows.Next() {
+		var p Policy
+		var raw []byte
+		if err = rows.Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.DraftRevision, &p.ActiveVersion, &raw); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(raw, &p.Draft); err != nil {
+			return nil, err
+		}
+		items = append(items, p)
+	}
+	return items, rows.Err()
+}
+func (s *Store) Policy(ctx context.Context, id string) (Policy, error) {
+	var p Policy
+	var draft, active []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT p.id,p.name,p.alias,p.enabled,p.draft_revision,p.active_version,p.draft,COALESCE(v.config,'null'::jsonb) FROM audit_policies p LEFT JOIN audit_policy_versions v ON p.id=v.policy_id AND p.active_version=v.version WHERE p.id=$1`, id).Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.DraftRevision, &p.ActiveVersion, &draft, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrNotFound
+	}
+	if err != nil {
+		return p, err
+	}
+	if err = json.Unmarshal(draft, &p.Draft); err != nil {
+		return p, err
+	}
+	err = json.Unmarshal(active, &p.Active)
+	return p, err
+}
+func (s *Store) PolicyByAlias(ctx context.Context, alias string) (Policy, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, "SELECT id FROM audit_policies WHERE alias=$1", alias).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Policy{}, ErrNotFound
+	}
+	if err != nil {
+		return Policy{}, err
+	}
+	return s.Policy(ctx, id)
+}
+func (s *Store) CreatePolicy(ctx context.Context, actor, name, alias, source string) (Policy, error) {
+	cfg := DefaultConfig()
+	if source != "" {
+		p, err := s.Policy(ctx, source)
+		if err != nil {
+			return Policy{}, err
+		}
+		cfg = p.Draft
+	}
+	id := randomToken("pol_")
+	raw, _ := json.Marshal(cfg)
+	err := s.mutate(ctx, actor, "policy.create", id, func(tx *sql.Tx) error {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM audit_policies WHERE alias=$1)", alias).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return problem(409, "alias_exists", "模型别名已存在")
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO audit_policies(id,name,alias,draft) VALUES($1,$2,$3,$4)", id, name, alias, string(raw))
+		return err
+	})
+	if err != nil {
+		return Policy{}, err
+	}
+	return s.Policy(ctx, id)
+}
+func (s *Store) SaveDraft(ctx context.Context, actor, id, name string, revision int64, cfg PolicyConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return problem(400, "invalid_config", err.Error())
+	}
+	raw, _ := json.Marshal(cfg)
+	return s.mutate(ctx, actor, "policy.save_draft", id, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, "UPDATE audit_policies SET name=$1,draft=$2,draft_revision=draft_revision+1 WHERE id=$3 AND draft_revision=$4", name, string(raw), id, revision)
+		if err != nil {
+			return err
+		}
+		n, _ := result.RowsAffected()
+		if n != 1 {
+			return ErrConflict
+		}
+		return nil
+	})
+}
+func (s *Store) Publish(ctx context.Context, actor, id string, revision int64, rollback int) (int, error) {
+	version := 0
+	err := s.mutate(ctx, actor, "policy.publish", id, func(tx *sql.Tx) error {
+		var raw []byte
+		var current int64
+		err := tx.QueryRowContext(ctx, "SELECT draft,draft_revision,active_version FROM audit_policies WHERE id=$1 FOR UPDATE", id).Scan(&raw, &current, &version)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if revision != current {
+			return ErrConflict
+		}
+		if rollback > 0 {
+			err = tx.QueryRowContext(ctx, "SELECT config FROM audit_policy_versions WHERE policy_id=$1 AND version=$2", id, rollback).Scan(&raw)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+		}
+		var cfg PolicyConfig
+		if err = json.Unmarshal(raw, &cfg); err != nil {
+			return err
+		}
+		if err = cfg.Validate(); err != nil {
+			return problem(400, "invalid_config", err.Error())
+		}
+		var active bool
+		err = tx.QueryRowContext(ctx, "SELECT active FROM provider_credentials WHERE id=$1 FOR SHARE", cfg.CredentialID).Scan(&active)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
+			return problem(400, "credential_required", "请先选择有效的 DeepSeek 密钥")
+		}
+		if err != nil {
+			return err
+		}
+		version++
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_policy_versions(policy_id,version,config,author) VALUES($1,$2,$3,$4)", id, version, string(raw), actor); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE audit_policies SET active_version=$1,draft=$2,draft_revision=draft_revision+1 WHERE id=$3", version, string(raw), id)
+		return err
+	})
+	return version, err
+}
+func (s *Store) Versions(ctx context.Context, id string) ([]Version, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT version,config,created_at,author FROM audit_policy_versions WHERE policy_id=$1 ORDER BY version DESC LIMIT 100", id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Version{}
+	for rows.Next() {
+		var v Version
+		var raw []byte
+		if err = rows.Scan(&v.Version, &raw, &v.CreatedAt, &v.Author); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(raw, &v.Config); err != nil {
+			return nil, err
+		}
+		items = append(items, v)
+	}
+	return items, rows.Err()
+}
+func (s *Store) Credentials(ctx context.Context) ([]Credential, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,masked,active FROM provider_credentials ORDER BY name,id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Credential{}
+	for rows.Next() {
+		var c Credential
+		if err = rows.Scan(&c.ID, &c.Name, &c.Masked, &c.Active); err != nil {
+			return nil, err
+		}
+		items = append(items, c)
+	}
+	return items, rows.Err()
+}
+func (s *Store) SaveCredential(ctx context.Context, actor, id, name, key string, active bool) (string, error) {
+	if key != "" && (len(key) < 8 || len(key) > 512 || strings.ContainsAny(key, "\r\n\t ")) {
+		return "", problem(400, "invalid_credential", "密钥格式无效")
+	}
+	create := id == ""
+	if create {
+		id = randomToken("cred_")
+	}
+	if create && key == "" {
+		return "", problem(400, "key_required", "请输入 DeepSeek API Key")
+	}
+	err := s.mutate(ctx, actor, "credential.update", id, func(tx *sql.Tx) error {
+		if create {
+			_, err := tx.ExecContext(ctx, "INSERT INTO provider_credentials(id,name,masked,encrypted,active) VALUES($1,$2,$3,$4,$5)", id, name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active)
+			return err
+		}
+		var result sql.Result
+		var err error
+		if key != "" {
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,masked=$2,encrypted=$3,active=$4 WHERE id=$5", name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, id)
+		} else {
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,active=$2 WHERE id=$3", name, active, id)
+		}
+		if err != nil {
+			return err
+		}
+		n, _ := result.RowsAffected()
+		if n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	return id, err
+}
+func (s *Store) CredentialSecret(ctx context.Context, id string) (string, error) {
+	var raw []byte
+	err := s.DB.QueryRowContext(ctx, "SELECT encrypted FROM provider_credentials WHERE id=$1 AND active=TRUE", id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", problem(503, "credential_unavailable", "DeepSeek 密钥尚未配置或已停用")
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.Vault.Open(raw, "credential:"+id)
+}
+func (s *Store) Keys(ctx context.Context) ([]ClientKey, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,prefix,policy_ids,rpm,active,created_at FROM client_api_keys ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := []ClientKey{}
+	for rows.Next() {
+		var k ClientKey
+		var raw []byte
+		if err = rows.Scan(&k.ID, &k.Name, &k.Prefix, &raw, &k.RPM, &k.Active, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(raw, &k.PolicyIDs); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+func (s *Store) CreateKey(ctx context.Context, actor, name string, ids []string, rpm int) (string, error) {
+	token := randomToken("dsa_")
+	id := randomToken("key_")
+	raw, _ := json.Marshal(ids)
+	err := s.mutate(ctx, actor, "key.create", id, func(tx *sql.Tx) error {
+		for _, policyID := range ids {
+			var exists bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM audit_policies WHERE id=$1)", policyID).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists {
+				return problem(400, "invalid_policy", "所选策略不存在")
+			}
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO client_api_keys(id,name,prefix,token_hash,policy_ids,rpm) VALUES($1,$2,$3,$4,$5,$6)", id, name, token[:12], digest(token), string(raw), rpm)
+		return err
+	})
+	return token, err
+}
+func (s *Store) RevokeKey(ctx context.Context, actor, id string) error {
+	return s.mutate(ctx, actor, "key.revoke", id, func(tx *sql.Tx) error {
+		r, err := tx.ExecContext(ctx, "UPDATE client_api_keys SET active=FALSE WHERE id=$1", id)
+		if err != nil {
+			return err
+		}
+		n, _ := r.RowsAffected()
+		if n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+func (s *Store) AuthenticateKey(ctx context.Context, token string) (ClientKey, error) {
+	var k ClientKey
+	var raw []byte
+	err := s.DB.QueryRowContext(ctx, "SELECT id,name,policy_ids,rpm FROM client_api_keys WHERE token_hash=$1 AND active=TRUE", digest(token)).Scan(&k.ID, &k.Name, &raw, &k.RPM)
+	if errors.Is(err, sql.ErrNoRows) {
+		return k, problem(401, "invalid_api_key", "审核服务访问密钥无效")
+	}
+	if err != nil {
+		return k, err
+	}
+	err = json.Unmarshal(raw, &k.PolicyIDs)
+	return k, err
+}
+func (s *Store) Rate(ctx context.Context, bucket string, max int) (bool, error) {
+	var hits int
+	err := s.DB.QueryRowContext(ctx, `INSERT INTO rate_limits(bucket,starts_at,hits) VALUES($1,NOW(),1) ON CONFLICT(bucket) DO UPDATE SET starts_at=CASE WHEN rate_limits.starts_at < NOW()-INTERVAL '1 minute' THEN NOW() ELSE rate_limits.starts_at END,hits=CASE WHEN rate_limits.starts_at < NOW()-INTERVAL '1 minute' THEN 1 ELSE rate_limits.hits+1 END RETURNING hits`, bucket).Scan(&hits)
+	return hits <= max, err
+}
+func (s *Store) Record(ctx context.Context, l AuditLog, text string, days int) error {
+	var encrypted []byte
+	if l.InputStored {
+		encrypted = s.Vault.Seal(text, "input:"+l.ID)
+	}
+	raw, err := json.Marshal(l)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, "INSERT INTO audit_requests(id,kind,policy_id,client_id,flagged,error_code,metadata,input_cipher,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", l.ID, l.Kind, l.PolicyID, l.ClientID, l.Flagged, l.ErrorCode, string(raw), encrypted, time.Now().Add(time.Duration(days)*24*time.Hour))
+	return err
+}
+func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) {
+	args := []any{}
+	where := []string{"expires_at>NOW()"}
+	add := func(expr string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(expr, len(args)))
+	}
+	if f.Kind != "" {
+		add("kind=$%d", f.Kind)
+	}
+	if f.PolicyID != "" {
+		add("policy_id=$%d", f.PolicyID)
+	}
+	if f.ClientID != "" {
+		add("client_id=$%d", f.ClientID)
+	}
+	switch f.Result {
+	case "flagged":
+		where = append(where, "flagged=TRUE")
+	case "allow":
+		where = append(where, "flagged=FALSE AND error_code=''")
+	case "error":
+		where = append(where, "error_code<>''")
+	}
+	if f.From != "" {
+		add("created_at >= $%d::timestamptz", f.From)
+	}
+	if f.To != "" {
+		add("created_at <= $%d::timestamptz", f.To)
+	}
+	clause := strings.Join(where, " AND ")
+	var count int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_requests WHERE "+clause, args...).Scan(&count); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
+	rows, err := s.DB.QueryContext(ctx, "SELECT metadata,created_at FROM audit_requests WHERE "+clause+fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	logs := []AuditLog{}
+	for rows.Next() {
+		var raw []byte
+		var created time.Time
+		if err = rows.Scan(&raw, &created); err != nil {
+			return nil, 0, err
+		}
+		var l AuditLog
+		if err = json.Unmarshal(raw, &l); err != nil {
+			return nil, 0, err
+		}
+		l.CreatedAt = created
+		logs = append(logs, l)
+	}
+	return logs, count, rows.Err()
+}
+func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
+	var raw, cipher []byte
+	var l AuditLog
+	err := s.DB.QueryRowContext(ctx, "SELECT metadata,input_cipher,created_at FROM audit_requests WHERE id=$1 AND expires_at>NOW()", id).Scan(&raw, &cipher, &l.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, ErrNotFound
+	}
+	if err != nil {
+		return l, err
+	}
+	created := l.CreatedAt
+	if err = json.Unmarshal(raw, &l); err != nil {
+		return l, err
+	}
+	l.CreatedAt = created
+	if len(cipher) > 0 {
+		l.Input, err = s.Vault.Open(cipher, "input:"+id)
+	}
+	return l, err
+}
+func (s *Store) Overview(ctx context.Context) (map[string]any, error) {
+	var count, hits, fail, tokens int64
+	var avg, p95 float64
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE flagged),COUNT(*) FILTER(WHERE error_code<>''),COALESCE(SUM((metadata->'usage'->>'total_tokens')::bigint),0),COALESCE(AVG((metadata->>'latency_ms')::float),0),COALESCE(percentile_cont(0.95) WITHIN GROUP(ORDER BY (metadata->>'latency_ms')::float),0) FROM audit_requests WHERE kind='production' AND created_at>NOW()-INTERVAL '24 hours' AND expires_at>NOW()`).Scan(&count, &hits, &fail, &tokens, &avg, &p95)
+	return map[string]any{"requests": count, "flagged": hits, "errors": fail, "tokens": tokens, "avg_latency_ms": avg, "p95_latency_ms": p95}, err
+}
+func (s *Store) Cleanup(ctx context.Context) error {
+	for _, query := range []string{"UPDATE audit_costs SET status='pending',note='请求结算中断，预留费用待核对' WHERE status='reserved' AND started_at<NOW()-INTERVAL '2 minutes'", "DELETE FROM assessment_cache WHERE expires_at<NOW()", "DELETE FROM audit_requests WHERE expires_at<NOW()", "DELETE FROM admin_sessions WHERE expires_at<NOW()", "DELETE FROM rate_limits WHERE starts_at<NOW()-INTERVAL '1 day'", "DELETE FROM admin_action_logs WHERE created_at<NOW()-INTERVAL '365 days'"} {
+		if _, err := s.DB.ExecContext(ctx, query); err != nil {
+			return err
+		}
+	}
+	return nil
+}
