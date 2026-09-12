@@ -48,3 +48,8 @@ CREATE TABLE IF NOT EXISTS cost_adjustments (
 CREATE TABLE IF NOT EXISTS assessment_cache (
  cache_key TEXT PRIMARY KEY, assessment JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL
 );
+
+-- Additive fields keep pre-Grok DeepSeek versions readable for rollback.
+ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'deepseek';
+ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com';
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'deepseek';

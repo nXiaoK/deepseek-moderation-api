@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -37,11 +36,14 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "temperature": 0, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	if cfg.ProviderID() == ProviderGrok {
+		delete(payload, "thinking")
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Assessment{}, Usage{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.chatURL(), bytes.NewReader(raw))
 	if err != nil {
 		return Assessment{}, Usage{}, err
 	}
@@ -52,19 +54,24 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	if err != nil {
 		var ne net.Error
 		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
-			return Assessment{}, attempt, problem(504, "upstream_timeout", "DeepSeek 审核超时")
+			return Assessment{}, attempt, problem(504, "upstream_timeout", cfg.providerLabel()+" 审核超时")
 		}
-		return Assessment{}, attempt, problem(503, "upstream_unavailable", "DeepSeek 暂时不可用")
+		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 	}
 	defer res.Body.Close()
+	if cfg.ProviderID() == ProviderGrok && res.Header.Get(grokProtocolHeader) != grokProtocol {
+		return Assessment{}, attempt, problem(502, "unverified_grok_response", "响应不是受限 Grok 审核入口，已停止处理")
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, problem(503, "upstream_unavailable", "DeepSeek 请求失败，请检查模型连接、密钥和额度")
+		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 65537))
 	if err != nil || len(body) > 65536 {
 		return Assessment{}, attempt, problem(502, "invalid_model_response", "模型响应超过上限或读取失败")
 	}
 	var out struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
 		Choices []struct {
 			Finish  string `json:"finish_reason"`
 			Message struct {
@@ -72,7 +79,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 				Refusal any    `json:"refusal"`
 			} `json:"message"`
 		} `json:"choices"`
-		Usage Usage `json:"usage"`
+		Usage json.RawMessage `json:"usage"`
 	}
 	// The provider envelope has extensible fields; the model's content is strict.
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -84,21 +91,48 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		return Assessment{}, attempt, problem(502, "invalid_model_response", "模型响应包含多余内容")
 	}
 	decodeErr := json.Unmarshal(body, &out)
-	out.Usage.Attempted = true
+	usage := Usage{Attempted: true}
+	if cfg.ProviderID() == ProviderGrok {
+		usage = parseGrokUsage(out.Usage)
+	} else {
+		_ = json.Unmarshal(out.Usage, &usage)
+		usage.Attempted = true
+	}
+	if len(out.ID) <= 200 {
+		usage.UpstreamRequestID = out.ID
+	}
+	if len(out.Model) <= 200 {
+		usage.ActualModel = out.Model
+	}
 	if decodeErr != nil || len(out.Choices) != 1 || out.Choices[0].Finish != "stop" || out.Choices[0].Message.Refusal != nil {
-		return Assessment{}, out.Usage, problem(502, "invalid_model_response", "模型未完整返回审核结果")
+		return Assessment{}, usage, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
 	assessment, err := ParseAssessment([]byte(out.Choices[0].Message.Content))
 	if err != nil {
-		return Assessment{}, out.Usage, problem(502, "invalid_model_response", err.Error())
+		return Assessment{}, usage, problem(502, "invalid_model_response", err.Error())
 	}
-	return assessment, out.Usage, nil
+	return assessment, usage, nil
 }
 
 func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, version int, client, kind, text string) (Response, error) {
 	id := randomToken("audit_")
 	start := time.Now()
-	key, err := s.Store.CredentialSecret(ctx, cfg.CredentialID)
+	key, err := s.Store.CredentialForConfig(ctx, cfg)
+	if err == nil && cfg.ProviderID() == ProviderGrok {
+		caps, probeErr := s.Engine.ProbeGrok(ctx, cfg, key)
+		if probeErr != nil {
+			return Response{}, probeErr
+		}
+		found := false
+		for _, m := range caps.Models {
+			if m == cfg.Model {
+				found = true
+			}
+		}
+		if !found {
+			return Response{}, problem(403, "grok_model_not_allowed", "模型已不在 sub2api 审核分组的允许列表中")
+		}
+	}
 	var result Assessment
 	var usage Usage
 	var entry *CostReservation
@@ -139,7 +173,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 		}
 	}
 	elapsed := time.Since(start).Milliseconds()
-	l := AuditLog{ID: id, Kind: kind, PolicyID: p.ID, PolicyVersion: version, ClientID: client, Model: cfg.Model, Threshold: cfg.Threshold, LatencyMS: elapsed, Usage: usage, InputStored: cfg.StoreInput, CreatedAt: time.Now().UTC(), Cost: cost, CacheHit: cacheHit}
+	l := AuditLog{UpstreamRequestID: usage.UpstreamRequestID, Provider: cfg.ProviderID(), ID: id, Kind: kind, PolicyID: p.ID, PolicyVersion: version, ClientID: client, Model: cfg.Model, Threshold: cfg.Threshold, LatencyMS: elapsed, Usage: usage, InputStored: cfg.StoreInput, CreatedAt: time.Now().UTC(), Cost: cost, CacheHit: cacheHit}
 	if err == nil {
 		l.Confidence = &result.Confidence
 		l.Flagged = result.Confidence >= cfg.Threshold
@@ -160,5 +194,5 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 		return Response{}, err
 	}
 	item := Result{Flagged: l.Flagged, Categories: map[string]bool{"custom_policy": l.Flagged}, Scores: map[string]float64{"custom_policy": result.Confidence}, Audit: AuditMetadata{1, p.ID, version, result.Confidence, cfg.Threshold, l.Reason}}
-	return Response{ID: id, Model: p.Alias, Results: []Result{item}, Usage: usage, LatencyMS: elapsed, Cost: cost, CacheHit: cacheHit}, nil
+	return Response{Provider: cfg.ProviderID(), ID: id, Model: p.Alias, Results: []Result{item}, Usage: usage, LatencyMS: elapsed, Cost: cost, CacheHit: cacheHit}, nil
 }

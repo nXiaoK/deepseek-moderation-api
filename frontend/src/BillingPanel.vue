@@ -345,8 +345,16 @@ onMounted(refresh);
                       statusLabels[row.cost.status] || row.cost.status
                     }}</span
                   ><small
-                    >{{ row.cost.period === "peak" ? "高峰" : "空闲" }} · 价格
-                    #{{ row.cost.price_id ?? "未知" }}</small
+                    >{{
+                      row.cost.period === "gateway_managed"
+                        ? "Grok 网关额度"
+                        : row.cost.period === "higher_rate_estimate"
+                          ? "跨时段估算"
+                          : row.cost.period === "peak"
+                            ? "高峰"
+                            : "空闲"
+                    }}
+                    · 价格 #{{ row.cost.price_id ?? "未知" }}</small
                   >
                 </td>
                 <td>

@@ -24,6 +24,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set initial ADMIN_PASSWORD in .env}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8090}
       LISTEN_ADDR: 0.0.0.0:8090
+      AUDIT_SUB2API_ORIGINS: ${AUDIT_SUB2API_ORIGINS:-}
     depends_on:
       db:
         condition: service_healthy

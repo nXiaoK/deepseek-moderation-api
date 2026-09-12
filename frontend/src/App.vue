@@ -11,6 +11,7 @@ import {
   type Config,
   type Credential,
   type Policy,
+  type Provider,
   type Version,
 } from "./api";
 
@@ -49,6 +50,10 @@ const creating = ref(false),
   newName = ref(""),
   newAlias = ref(""),
   copySource = ref("");
+const credentialProvider = ref<Provider>("deepseek"),
+  credentialBaseURL = ref("https://api.deepseek.com");
+const grokModels = ref<string[]>([]),
+  connectionVerified = ref(false);
 const credentialName = ref(""),
   credentialSecret = ref(""),
   credentialEditID = ref("");
@@ -88,14 +93,22 @@ const dirty = computed(
 );
 const credentialReady = computed(() =>
   credentials.value.some(
-    (c) => c.id === config.value?.credential_id && c.active,
+    (c) =>
+      c.id === config.value?.credential_id &&
+      c.active &&
+      c.provider === (config.value?.provider || "deepseek"),
   ),
 );
 const preview = computed(() =>
   JSON.stringify(
     {
       model: config.value?.model,
-      thinking: { type: "disabled" },
+      ...(config.value?.provider === "grok_via_sub2api"
+        ? {}
+        : { thinking: { type: "disabled" } }),
+      stream: false,
+      temperature: 0,
+      max_tokens: config.value?.max_tokens,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: config.value?.prompt },
@@ -136,6 +149,9 @@ async function run(fn: () => Promise<void>) {
 function usePolicy(p: Policy) {
   selected.value = p;
   config.value = structuredClone(p.draft);
+  config.value.provider ||= "deepseek";
+  grokModels.value = [];
+  connectionVerified.value = false;
   policyName.value = p.name;
   baseline.value = JSON.stringify({ name: p.name, config: config.value });
   testResult.value = null;
@@ -311,14 +327,22 @@ async function saveCredential() {
       `/admin/credentials${credentialEditID.value ? "/" + credentialEditID.value : ""}`,
       credentialEditID.value ? "PUT" : "POST",
       {
+        provider: credentialProvider.value,
+        base_url: credentialBaseURL.value,
         name: credentialName.value,
         api_key: credentialSecret.value,
         active: true,
       },
     );
     credentials.value = await api("/admin/credentials");
-    if (config.value && !config.value.credential_id)
+    if (
+      config.value &&
+      !config.value.credential_id &&
+      (config.value.provider || "deepseek") === credentialProvider.value
+    ) {
       config.value.credential_id = result.id;
+      selectConnection();
+    }
     credentialEditID.value = "";
     credentialName.value = "";
     credentialSecret.value = "";
@@ -328,12 +352,63 @@ async function saveCredential() {
 async function toggleCredential(c: Credential) {
   await run(async () => {
     await api(`/admin/credentials/${c.id}`, "PUT", {
+      provider: c.provider,
+      base_url: c.base_url,
       name: c.name,
       api_key: "",
       active: !c.active,
     });
     credentials.value = await api("/admin/credentials");
     notice.value = c.active ? "密钥已停用。" : "密钥已启用。";
+  });
+}
+const grokManagementURL = computed(() => {
+  if (config.value?.provider !== "grok_via_sub2api") return "";
+  const c = credentials.value.find(
+    (c) =>
+      c.id === config.value?.credential_id && c.provider === "grok_via_sub2api",
+  );
+  if (!c) return "";
+  try {
+    const url = new URL(c.base_url);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.origin + "/admin/accounts";
+  } catch {
+    return "";
+  }
+});
+function changeProvider() {
+  if (!config.value) return;
+  config.value.credential_id = "";
+  config.value.base_url =
+    config.value.provider === "grok_via_sub2api"
+      ? ""
+      : "https://api.deepseek.com";
+  config.value.model =
+    config.value.provider === "grok_via_sub2api"
+      ? "grok-4.6"
+      : "deepseek-flash";
+  config.value.max_tokens = 512;
+  grokModels.value = [];
+  connectionVerified.value = false;
+}
+function selectConnection() {
+  if (!config.value) return;
+  const c = credentials.value.find((c) => c.id === config.value?.credential_id);
+  if (c) config.value.base_url = c.base_url;
+  grokModels.value = [];
+  connectionVerified.value = false;
+}
+async function probeConnection() {
+  await run(async () => {
+    if (!config.value) return;
+    const caps = await api<{
+      models: string[];
+      audit_recursion_protected: boolean;
+    }>("/admin/connections/probe", "POST", { config: config.value });
+    grokModels.value = caps.models;
+    connectionVerified.value = caps.audit_recursion_protected;
+    notice.value = "连接验证通过，允许模型：" + caps.models.join("、");
   });
 }
 async function createKey() {
@@ -430,7 +505,7 @@ window.addEventListener("beforeunload", (e) => {
       <p class="eyebrow">AUDIT CONSOLE</p>
       <h1>审核规则，<br />由你定义。</h1>
       <p>管理提示词、验证审核效果，<br />让每次判定都有据可查。</p>
-      <span class="login-foot">DeepSeek 内容审核系统</span>
+      <span class="login-foot">多模型内容审核系统</span>
     </div>
     <form class="login-form" @submit.prevent="login">
       <p class="eyebrow">管理控制台</p>
@@ -503,7 +578,7 @@ window.addEventListener("beforeunload", (e) => {
                   : page === "overview"
                     ? "过去 24 小时的正式审核请求。"
                     : page === "credentials"
-                      ? "管理审核系统调用 DeepSeek 所使用的凭证。"
+                      ? "管理 DeepSeek 官方密钥与 sub2api Grok 服务连接。"
                       : page === "keys"
                         ? "为 sub2api 和其他调用方分配独立访问凭证。"
                         : page === "logs"
@@ -754,26 +829,88 @@ window.addEventListener("beforeunload", (e) => {
               <h2>模型连接与判定</h2>
               <span class="badge gray">草稿配置</span>
             </div>
+            <div
+              v-if="config.provider === 'grok_via_sub2api'"
+              class="hint grok-connection"
+            >
+              <p>
+                复用 sub2api 中已授权的 Grok OAuth 账号。此处保存审核专用
+                sub2api API Key，Grok 登录及续期仍由 sub2api 管理。
+              </p>
+              <button
+                @click="probeConnection"
+                :disabled="busy || !credentialReady"
+              >
+                验证连接并获取允许模型
+              </button>
+              <a
+                v-if="grokManagementURL"
+                :href="grokManagementURL"
+                target="_blank"
+                rel="noopener noreferrer"
+                >打开 sub2api 账号管理 ↗</a
+              >
+              <p v-if="connectionVerified">
+                专用入口验证通过；防循环审核已启用。模型权益仍需试跑确认。
+              </p>
+              <p>
+                Grok 成本按套餐/网关额度管理，不套用 DeepSeek
+                单价。使用人民币预算时，没有可靠价格的请求会被拒绝；请先在
+                sub2api 设置专用 Key 配额和限流。
+              </p>
+            </div>
             <div class="form-grid">
+              <label
+                >审核供应商<select
+                  v-model="config.provider"
+                  @change="changeProvider"
+                  :disabled="busy"
+                >
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="grok_via_sub2api">
+                    Grok（经 sub2api OAuth 账号）
+                  </option>
+                </select></label
+              >
+              <label v-if="config.provider === 'grok_via_sub2api'"
+                >连接修订<input
+                  v-model="config.connection_revision"
+                  placeholder="例如：grok-pool-v1"
+                  :disabled="busy"
+                /><small class="muted"
+                  >更改 sub2api
+                  模型映射后更新此值并发布，使结果缓存失效。</small
+                ></label
+              >
+              <datalist id="grok-audit-models">
+                <option v-for="m in grokModels" :key="m" :value="m" />
+              </datalist>
+
               <label
                 >策略名称<input v-model="policyName" :disabled="busy" /></label
               ><label
-                >DeepSeek 模型<input
+                >审核模型<input
                   v-model="config.model"
+                  list="grok-audit-models"
                   :disabled="busy" /></label
               ><label
-                >DeepSeek Base URL<input
+                >模型连接地址<input
                   v-model="config.base_url"
+                  :readonly="config.provider === 'grok_via_sub2api'"
                   type="url"
                   :disabled="busy" /></label
               ><label
                 >上游密钥<select
                   v-model="config.credential_id"
+                  @change="selectConnection"
                   :disabled="busy"
                 >
                   <option value="">请选择密钥</option>
                   <option
-                    v-for="c in credentials"
+                    v-for="c in credentials.filter(
+                      (item) =>
+                        item.provider === (config?.provider || 'deepseek'),
+                    )"
                     :key="c.id"
                     :value="c.id"
                     :disabled="!c.active"
@@ -807,8 +944,8 @@ window.addEventListener("beforeunload", (e) => {
                 >最大输出 tokens<input
                   v-model.number="config.max_tokens"
                   type="number"
-                  min="64"
-                  max="4096"
+                  :min="config.provider === 'grok_via_sub2api' ? 128 : 64"
+                  :max="config.provider === 'grok_via_sub2api' ? 512 : 4096"
                   :disabled="busy" /></label
               ><label
                 >审核记录保留（天）<input
@@ -845,7 +982,8 @@ window.addEventListener("beforeunload", (e) => {
               ></label
             >
             <p class="hint">
-              模型使用非思考模式，返回 JSON。连接验证可在“审核试跑”中完成。
+              DeepSeek 使用非思考模式；Grok 参数按模型接口适配。均返回
+              JSON，不允许执行搜索或其他工具。
             </p>
           </section>
           <section v-if="tab === 'versions'" class="panel">
@@ -970,13 +1108,45 @@ window.addEventListener("beforeunload", (e) => {
               </div>
               <form class="stack-form" @submit.prevent="saveCredential">
                 <label
+                  >连接类型<select
+                    v-model="credentialProvider"
+                    :disabled="!!credentialEditID || busy"
+                    @change="
+                      credentialBaseURL =
+                        credentialProvider === 'deepseek'
+                          ? 'https://api.deepseek.com'
+                          : ''
+                    "
+                  >
+                    <option value="deepseek">DeepSeek 官方 API</option>
+                    <option value="grok_via_sub2api">
+                      Grok · sub2api 专用服务
+                    </option>
+                  </select></label
+                ><label v-if="credentialProvider === 'grok_via_sub2api'"
+                  >sub2api 服务根地址<input
+                    v-model="credentialBaseURL"
+                    type="url"
+                    required
+                    :readonly="!!credentialEditID"
+                    placeholder="https://sub2api.example.com"
+                  /><small class="muted"
+                    >服务器需通过 AUDIT_SUB2API_ORIGINS
+                    允许此地址。凭证保存后地址固定，换地址请新建连接。</small
+                  ></label
+                >
+                <label
                   >名称<input
                     v-model="credentialName"
                     placeholder="例如：DeepSeek 主账户"
                     required
                     maxlength="200" /></label
                 ><label
-                  >DeepSeek API Key<input
+                  >{{
+                    credentialProvider === "deepseek"
+                      ? "DeepSeek API Key"
+                      : "sub2api 审核专用 API Key"
+                  }}<input
                     v-model="credentialSecret"
                     type="password"
                     autocomplete="off"
@@ -1004,11 +1174,19 @@ window.addEventListener("beforeunload", (e) => {
             <section class="panel">
               <div class="panel-heading"><h2>已配置密钥</h2></div>
               <div v-if="!credentials.length" class="empty">
-                添加你的第一把 DeepSeek 密钥。
+                添加 DeepSeek 或 sub2api Grok 连接密钥。
               </div>
               <div v-for="c in credentials" :key="c.id" class="credential-row">
                 <div>
                   <strong>{{ c.name }}</strong>
+                  <p class="muted small">
+                    {{
+                      c.provider === "grok_via_sub2api"
+                        ? "Grok / sub2api"
+                        : "DeepSeek"
+                    }}
+                    · {{ c.base_url }}
+                  </p>
                   <p>
                     <code>{{ c.masked }}</code
                     ><span class="badge" :class="c.active ? 'green' : 'gray'">{{
@@ -1021,6 +1199,8 @@ window.addEventListener("beforeunload", (e) => {
                     @click="
                       credentialEditID = c.id;
                       credentialName = c.name;
+                      credentialProvider = c.provider;
+                      credentialBaseURL = c.base_url;
                       credentialSecret = '';
                     "
                     :disabled="busy"
@@ -1363,7 +1543,22 @@ window.addEventListener("beforeunload", (e) => {
           {{ detail.policy_version ? `v${detail.policy_version}` : "草稿" }}
         </dd>
         <dt>模型</dt>
-        <dd>{{ detail.model }}</dd>
+        <dd>
+          {{
+            detail.provider === "grok_via_sub2api"
+              ? "Grok / sub2api"
+              : "DeepSeek"
+          }}
+          · {{ detail.model }}
+        </dd>
+        <dt v-if="detail.usage.actual_model">实际响应模型</dt>
+        <dd v-if="detail.usage.actual_model">
+          {{ detail.usage.actual_model }}
+        </dd>
+        <dt v-if="detail.usage.upstream_request_id">模型响应 ID</dt>
+        <dd v-if="detail.usage.upstream_request_id">
+          {{ detail.usage.upstream_request_id }}
+        </dd>
         <dt>判定</dt>
         <dd>
           {{

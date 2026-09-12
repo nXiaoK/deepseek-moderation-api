@@ -1131,3 +1131,11 @@ td small {
   margin: 0 24px 22px;
   max-width: 640px;
 }
+
+.grok-connection {
+  margin: 20px 24px;
+}
+.grok-connection a {
+  margin-left: 16px;
+  color: #245b47;
+}

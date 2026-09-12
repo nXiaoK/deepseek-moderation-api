@@ -89,6 +89,9 @@ func (s *Store) Prices(ctx context.Context) ([]PriceCard, error) {
 }
 func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Policy, cfg PolicyConfig, version int, text string, cached bool, at time.Time) (*CostReservation, error) {
 	card, err := s.Price(ctx, cfg.Model, at)
+	if cfg.ProviderID() == ProviderGrok {
+		card = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +152,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		status = "local_cache"
 		amount = int64(0)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(request_id,client_id,kind,policy_id,policy_version,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, client, kind, p.ID, version, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, pricePeriod(at))
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(request_id,client_id,kind,policy_id,policy_version,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, id, client, kind, p.ID, version, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, at), cfg.ProviderID())
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +172,9 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 		if entry.Price == nil {
 			status = "pending"
 			note = "模型单价未知，请核对供应商账单"
+			if strings.HasPrefix(entry.Model, "grok-") {
+				note = "Grok OAuth 额度由 sub2api 管理；未取得逐请求实际货币成本，不能按 DeepSeek 价格计算"
+			}
 		} else {
 			var err error
 			amount, status, note, err = entry.Price.calculate(u, entry.StartedAt, end)
@@ -187,6 +193,9 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 		}
 	}
 	period := pricePeriod(entry.StartedAt)
+	if strings.HasPrefix(entry.Model, "grok-") {
+		period = "gateway_managed"
+	}
 	if u.Attempted && entry.Price != nil && pricePeriod(entry.StartedAt) != pricePeriod(end) {
 		period = "higher_rate_estimate"
 	}

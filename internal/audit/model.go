@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -12,16 +11,18 @@ import (
 )
 
 type PolicyConfig struct {
-	ResultCacheTTL int     `json:"result_cache_ttl_seconds"`
-	Prompt         string  `json:"prompt"`
-	Threshold      float64 `json:"threshold"`
-	Model          string  `json:"model"`
-	BaseURL        string  `json:"base_url"`
-	CredentialID   string  `json:"credential_id"`
-	TimeoutMS      int     `json:"timeout_ms"`
-	MaxTokens      int     `json:"max_tokens"`
-	StoreInput     bool    `json:"store_input"`
-	RetentionDays  int     `json:"retention_days"`
+	Provider           string  `json:"provider,omitempty"`
+	ConnectionRevision string  `json:"connection_revision,omitempty"`
+	ResultCacheTTL     int     `json:"result_cache_ttl_seconds"`
+	Prompt             string  `json:"prompt"`
+	Threshold          float64 `json:"threshold"`
+	Model              string  `json:"model"`
+	BaseURL            string  `json:"base_url"`
+	CredentialID       string  `json:"credential_id"`
+	TimeoutMS          int     `json:"timeout_ms"`
+	MaxTokens          int     `json:"max_tokens"`
+	StoreInput         bool    `json:"store_input"`
+	RetentionDays      int     `json:"retention_days"`
 }
 
 func (c PolicyConfig) Validate() error {
@@ -37,9 +38,14 @@ func (c PolicyConfig) Validate() error {
 	if !regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`).MatchString(c.Model) {
 		return errors.New("模型名称无效")
 	}
-	u, err := url.Parse(c.BaseURL)
-	if err != nil || u.Scheme != "https" || u.Host != "api.deepseek.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/" && u.Path != "/v1" && u.Path != "/v1/") {
-		return errors.New("上游地址必须为 https://api.deepseek.com 或其 /v1 路径")
+	if err := validateProviderURL(c.ProviderID(), c.BaseURL); err != nil {
+		return err
+	}
+	if len(c.ConnectionRevision) > 100 {
+		return errors.New("连接修订最多 100 字节")
+	}
+	if c.ProviderID() == ProviderGrok && (!strings.HasPrefix(c.Model, "grok-") || strings.ContainsAny(c.Model, "*/:") || strings.Contains(c.Model, "imagine") || strings.HasSuffix(c.Model, "latest") || c.MaxTokens < 128 || c.MaxTokens > 512) {
+		return errors.New("Grok 请选择明确的文本模型名，输出上限为 128～512")
 	}
 	if c.TimeoutMS < 1000 || c.TimeoutMS > 30000 {
 		return errors.New("超时必须为 1000～30000 ms")
@@ -70,10 +76,12 @@ type Version struct {
 	Author    string       `json:"author"`
 }
 type Credential struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Masked string `json:"masked"`
-	Active bool   `json:"active"`
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Masked   string `json:"masked"`
+	Active   bool   `json:"active"`
 }
 type ClientKey struct {
 	ID        string    `json:"id"`
@@ -103,16 +111,19 @@ type Result struct {
 	Audit      AuditMetadata      `json:"audit"`
 }
 type Usage struct {
-	PromptTokens     int  `json:"prompt_tokens"`
-	CompletionTokens int  `json:"completion_tokens"`
-	TotalTokens      int  `json:"total_tokens"`
-	CacheHitTokens   *int `json:"prompt_cache_hit_tokens,omitempty"`
-	CacheMissTokens  *int `json:"prompt_cache_miss_tokens,omitempty"`
-	ReasoningTokens  int  `json:"reasoning_tokens,omitempty"`
-	Reported         bool `json:"reported"`
-	Attempted        bool `json:"-"`
+	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	ActualModel       string `json:"actual_model,omitempty"`
+	PromptTokens      int    `json:"prompt_tokens"`
+	CompletionTokens  int    `json:"completion_tokens"`
+	TotalTokens       int    `json:"total_tokens"`
+	CacheHitTokens    *int   `json:"prompt_cache_hit_tokens,omitempty"`
+	CacheMissTokens   *int   `json:"prompt_cache_miss_tokens,omitempty"`
+	ReasoningTokens   int    `json:"reasoning_tokens,omitempty"`
+	Reported          bool   `json:"reported"`
+	Attempted         bool   `json:"-"`
 }
 type Response struct {
+	Provider  string    `json:"provider"`
 	CacheHit  bool      `json:"cache_hit"`
 	Cost      *CostView `json:"cost,omitempty"`
 	ID        string    `json:"id"`
@@ -122,24 +133,26 @@ type Response struct {
 	LatencyMS int64     `json:"latency_ms"`
 }
 type AuditLog struct {
-	CacheHit      bool      `json:"cache_hit"`
-	Cost          *CostView `json:"cost,omitempty"`
-	ID            string    `json:"id"`
-	Kind          string    `json:"kind"`
-	PolicyID      string    `json:"policy_id"`
-	PolicyVersion int       `json:"policy_version"`
-	ClientID      string    `json:"client_id"`
-	Model         string    `json:"model"`
-	Flagged       bool      `json:"flagged"`
-	Confidence    *float64  `json:"confidence"`
-	Threshold     float64   `json:"threshold"`
-	Reason        string    `json:"reason"`
-	ErrorCode     string    `json:"error_code"`
-	LatencyMS     int64     `json:"latency_ms"`
-	Usage         Usage     `json:"usage"`
-	InputStored   bool      `json:"input_stored"`
-	Input         string    `json:"input,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	Provider          string    `json:"provider"`
+	UpstreamRequestID string    `json:"upstream_request_id,omitempty"`
+	CacheHit          bool      `json:"cache_hit"`
+	Cost              *CostView `json:"cost,omitempty"`
+	ID                string    `json:"id"`
+	Kind              string    `json:"kind"`
+	PolicyID          string    `json:"policy_id"`
+	PolicyVersion     int       `json:"policy_version"`
+	ClientID          string    `json:"client_id"`
+	Model             string    `json:"model"`
+	Flagged           bool      `json:"flagged"`
+	Confidence        *float64  `json:"confidence"`
+	Threshold         float64   `json:"threshold"`
+	Reason            string    `json:"reason"`
+	ErrorCode         string    `json:"error_code"`
+	LatencyMS         int64     `json:"latency_ms"`
+	Usage             Usage     `json:"usage"`
+	InputStored       bool      `json:"input_stored"`
+	Input             string    `json:"input,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 type LogFilter struct {
 	Page, PageSize                             int

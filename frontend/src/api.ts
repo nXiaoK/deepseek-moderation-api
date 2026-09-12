@@ -1,4 +1,7 @@
+export type Provider = "deepseek" | "grok_via_sub2api";
 export interface Config {
+  provider?: Provider;
+  connection_revision?: string;
   result_cache_ttl_seconds: number;
   prompt: string;
   threshold: number;
@@ -27,6 +30,8 @@ export interface Version {
   author: string;
 }
 export interface Credential {
+  provider: Provider;
+  base_url: string;
   id: string;
   name: string;
   masked: string;
@@ -50,6 +55,7 @@ export interface Metadata {
   reason: string;
 }
 export interface AuditResponse {
+  provider?: Provider;
   id: string;
   model: string;
   latency_ms: number;
@@ -63,6 +69,7 @@ export interface AuditResponse {
   }[];
 }
 export interface AuditLog {
+  provider?: Provider;
   cost?: CostView;
   cache_hit?: boolean;
   id: string;
@@ -117,6 +124,8 @@ export async function api<T>(
 }
 
 export interface Usage {
+  actual_model?: string;
+  upstream_request_id?: string;
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;

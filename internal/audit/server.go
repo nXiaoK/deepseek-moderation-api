@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /admin/policies/{id}/rollback", s.publish)
 	admin("GET /admin/policies/{id}/versions", s.versions)
 	admin("POST /admin/policies/{id}/test", s.testPolicy)
+	admin("POST /admin/connections/probe", s.probeConnection)
 	admin("GET /admin/credentials", s.credentials)
 	admin("POST /admin/credentials", s.saveCredential)
 	admin("PUT /admin/credentials/{id}", s.saveCredential)
@@ -353,6 +354,9 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) error {
 	if rollback && in.Version < 1 || !rollback && in.Version != 0 {
 		return problem(400, "invalid_version", "版本参数无效")
 	}
+	if err := s.verifyGrokPublication(r.Context(), r.PathValue("id"), in.Revision, in.Version); err != nil {
+		return err
+	}
 	version, err := s.Store.Publish(r.Context(), actor(r), r.PathValue("id"), in.Revision, in.Version)
 	if err != nil {
 		return err
@@ -421,9 +425,11 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) error {
 }
 func (s *Server) saveCredential(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Name   string `json:"name"`
-		Key    string `json:"api_key"`
-		Active bool   `json:"active"`
+		Provider string `json:"provider"`
+		BaseURL  string `json:"base_url"`
+		Name     string `json:"name"`
+		Key      string `json:"api_key"`
+		Active   bool   `json:"active"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -431,7 +437,7 @@ func (s *Server) saveCredential(w http.ResponseWriter, r *http.Request) error {
 	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || in.Key != "" && (len(in.Key) < 8 || len(in.Key) > 512 || strings.ContainsAny(in.Key, "\r\n\t ")) {
 		return problem(400, "invalid_credential", "密钥名称或格式无效")
 	}
-	id, err := s.Store.SaveCredential(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Key, in.Active)
+	id, err := s.Store.SaveProviderCredential(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Key, in.Active, in.Provider, in.BaseURL)
 	if err != nil {
 		return err
 	}

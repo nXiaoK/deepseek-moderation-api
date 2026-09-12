@@ -165,14 +165,16 @@ func (c PriceCard) calculate(u Usage, start, end time.Time) (int64, string, stri
 // must not become an authoritative zero cost, nor invalidate a valid verdict.
 func (u *Usage) UnmarshalJSON(raw []byte) error {
 	var wire struct {
-		Prompt     *int  `json:"prompt_tokens"`
-		Reported   *bool `json:"reported"`
-		Reasoning  int   `json:"reasoning_tokens"`
-		Completion *int  `json:"completion_tokens"`
-		Total      *int  `json:"total_tokens"`
-		Hit        *int  `json:"prompt_cache_hit_tokens"`
-		Miss       *int  `json:"prompt_cache_miss_tokens"`
-		Details    struct {
+		UpstreamRequestID string `json:"upstream_request_id"`
+		ActualModel       string `json:"actual_model"`
+		Prompt            *int   `json:"prompt_tokens"`
+		Reported          *bool  `json:"reported"`
+		Reasoning         int    `json:"reasoning_tokens"`
+		Completion        *int   `json:"completion_tokens"`
+		Total             *int   `json:"total_tokens"`
+		Hit               *int   `json:"prompt_cache_hit_tokens"`
+		Miss              *int   `json:"prompt_cache_miss_tokens"`
+		Details           struct {
 			Reasoning int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
 	}
@@ -190,6 +192,8 @@ func (u *Usage) UnmarshalJSON(raw []byte) error {
 	u.PromptTokens = p
 	u.CompletionTokens = c
 	u.TotalTokens = t
+	u.UpstreamRequestID = wire.UpstreamRequestID
+	u.ActualModel = wire.ActualModel
 	u.Reported = wire.Reported == nil || *wire.Reported
 	if wire.Hit != nil && wire.Miss != nil && *wire.Hit >= 0 && *wire.Miss >= 0 && *wire.Hit <= p && *wire.Miss == p-*wire.Hit {
 		u.CacheHitTokens = wire.Hit
@@ -202,4 +206,11 @@ func (u *Usage) UnmarshalJSON(raw []byte) error {
 		}
 	}
 	return nil
+}
+
+func providerTariff(cfg PolicyConfig, t time.Time) string {
+	if cfg.ProviderID() == ProviderGrok {
+		return "gateway_managed"
+	}
+	return pricePeriod(t)
 }
