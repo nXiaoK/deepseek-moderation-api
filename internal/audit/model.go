@@ -44,9 +44,7 @@ func (c PolicyConfig) Validate() error {
 	if len(c.ConnectionRevision) > 100 {
 		return errors.New("连接修订最多 100 字节")
 	}
-	if c.ProviderID() == ProviderGrok && (!strings.HasPrefix(c.Model, "grok-") || strings.ContainsAny(c.Model, "*/:") || strings.Contains(c.Model, "imagine") || strings.HasSuffix(c.Model, "latest") || c.MaxTokens < 128 || c.MaxTokens > 512) {
-		return errors.New("Grok 请选择明确的文本模型名，输出上限为 128～512")
-	}
+
 	if c.TimeoutMS < 1000 || c.TimeoutMS > 30000 {
 		return errors.New("超时必须为 1000～30000 ms")
 	}

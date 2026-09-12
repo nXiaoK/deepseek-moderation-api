@@ -8,15 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"time"
 )
 
 const ProviderDeepSeek = "deepseek"
 const ProviderGrok = "grok_via_sub2api"
-const grokProtocol = "grok-v1"
-const grokProtocolHeader = "X-Sub2api-Audit-Protocol"
 
 func (c PolicyConfig) ProviderID() string {
 	if c.Provider == "" {
@@ -59,7 +56,7 @@ func providerRoot(base string) string {
 }
 func (c PolicyConfig) chatURL() string {
 	if c.ProviderID() == ProviderGrok {
-		return providerRoot(c.BaseURL) + "/v1/audit/grok/chat/completions"
+		return providerRoot(c.BaseURL) + "/v1/chat/completions"
 	}
 	return strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
 }
@@ -70,45 +67,54 @@ func (c PolicyConfig) providerLabel() string {
 	return "DeepSeek"
 }
 
-type GrokCapabilities struct {
-	Protocol           string   `json:"protocol"`
-	RecursionProtected bool     `json:"audit_recursion_protected"`
-	Models             []string `json:"models"`
-	MaxInput           int      `json:"max_input_characters"`
-	MaxOutput          int      `json:"max_output_tokens"`
-	ManagementPath     string   `json:"account_management_path"`
-	BillingMode        string   `json:"billing_mode"`
+// Model listing is an optional connection check. Inference and publication
+// do not depend on it, since some compatible gateways expose only chat.
+// validateProviderURL still enforces AUDIT_SUB2API_ORIGINS before credentials
+// are sent to the configured origin.
+type GrokModels struct {
+	Models []string `json:"models"`
 }
 
-func (e *Engine) ProbeGrok(ctx context.Context, cfg PolicyConfig, key string) (*GrokCapabilities, error) {
+func (e *Engine) ProbeGrok(ctx context.Context, cfg PolicyConfig, key string) (*GrokModels, error) {
 	if err := validateProviderURL(ProviderGrok, cfg.BaseURL); err != nil {
 		return nil, problem(400, "invalid_connection", err.Error())
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerRoot(cfg.BaseURL)+"/v1/audit/grok/capabilities", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerRoot(cfg.BaseURL)+"/v1/models", nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	res, err := e.Client.Do(req)
 	if err != nil {
-		return nil, problem(503, "grok_connection_unavailable", "无法连接 sub2api 审核入口")
+		return nil, problem(503, "grok_connection_unavailable", "无法连接 Grok API，请检查 sub2api 地址")
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 || res.Header.Get(grokProtocolHeader) != grokProtocol {
-		return nil, problem(503, "grok_connection_unverified", "sub2api 尚未启用受限 Grok 审核入口，或服务密钥/分组权限不匹配")
+	if res.StatusCode != 200 {
+		return nil, problem(502, "grok_models_unavailable", "无法读取 /v1/models，请检查地址和 API Key；若网关不提供模型列表，可手动填写模型后试跑")
 	}
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 65537))
-	if err != nil || len(raw) > 65536 {
-		return nil, problem(502, "invalid_capabilities", "连接能力响应无效")
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 131073))
+	if err != nil || len(raw) > 131072 {
+		return nil, problem(502, "invalid_model_list", "模型列表响应无效")
 	}
-	var caps GrokCapabilities
-	if json.Unmarshal(raw, &caps) != nil || caps.Protocol != grokProtocol || !caps.RecursionProtected || caps.MaxOutput < cfg.MaxTokens || caps.MaxInput < 64000 || len(caps.Models) == 0 {
-		return nil, problem(502, "invalid_capabilities", "sub2api 审核能力不满足要求")
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
-	caps.ManagementPath = "/admin/accounts" // never navigate a URL supplied by the peer
-	return &caps, nil
+	if json.Unmarshal(raw, &body) != nil || body.Data == nil {
+		return nil, problem(502, "invalid_model_list", "接口未返回标准模型列表，可手动填写模型后试跑")
+	}
+	result := &GrokModels{Models: []string{}}
+	seen := map[string]bool{}
+	for _, item := range body.Data {
+		if item.ID != "" && len(item.ID) <= 100 && !seen[item.ID] {
+			result.Models = append(result.Models, item.ID)
+			seen[item.ID] = true
+		}
+	}
+	return result, nil
 }
 func (s *Server) probeConnection(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
@@ -133,41 +139,6 @@ func (s *Server) probeConnection(w http.ResponseWriter, r *http.Request) error {
 	}
 	return writeJSON(w, 200, caps)
 }
-func (s *Server) verifyGrokPublication(ctx context.Context, id string, revision int64, rollback int) error {
-	p, err := s.Store.Policy(ctx, id)
-	if err != nil {
-		return err
-	}
-	if p.DraftRevision != revision {
-		return ErrConflict
-	}
-	cfg := p.Draft
-	if rollback > 0 {
-		var raw []byte
-		if err = s.Store.DB.QueryRowContext(ctx, "SELECT config FROM audit_policy_versions WHERE policy_id=$1 AND version=$2", id, rollback).Scan(&raw); err != nil {
-			return err
-		}
-		if err = json.Unmarshal(raw, &cfg); err != nil {
-			return err
-		}
-	}
-	if cfg.ProviderID() != ProviderGrok {
-		return nil
-	}
-	key, err := s.Store.CredentialForConfig(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	caps, err := s.Engine.ProbeGrok(ctx, cfg, key)
-	if err != nil {
-		return err
-	}
-	if !slices.Contains(caps.Models, cfg.Model) {
-		return problem(400, "model_not_allowed", "所选模型不在 sub2api 审核分组的明确允许列表中")
-	}
-	return nil
-}
-
 func parseGrokUsage(raw []byte) Usage {
 	var w struct {
 		Prompt       *int `json:"prompt_tokens"`

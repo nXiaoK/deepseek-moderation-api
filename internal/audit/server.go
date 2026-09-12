@@ -354,9 +354,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) error {
 	if rollback && in.Version < 1 || !rollback && in.Version != 0 {
 		return problem(400, "invalid_version", "版本参数无效")
 	}
-	if err := s.verifyGrokPublication(r.Context(), r.PathValue("id"), in.Revision, in.Version); err != nil {
-		return err
-	}
+
 	version, err := s.Store.Publish(r.Context(), actor(r), r.PathValue("id"), in.Revision, in.Version)
 	if err != nil {
 		return err

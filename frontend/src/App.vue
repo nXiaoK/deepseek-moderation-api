@@ -362,21 +362,6 @@ async function toggleCredential(c: Credential) {
     notice.value = c.active ? "密钥已停用。" : "密钥已启用。";
   });
 }
-const grokManagementURL = computed(() => {
-  if (config.value?.provider !== "grok_via_sub2api") return "";
-  const c = credentials.value.find(
-    (c) =>
-      c.id === config.value?.credential_id && c.provider === "grok_via_sub2api",
-  );
-  if (!c) return "";
-  try {
-    const url = new URL(c.base_url);
-    if (!["http:", "https:"].includes(url.protocol)) return "";
-    return url.origin + "/admin/accounts";
-  } catch {
-    return "";
-  }
-});
 function changeProvider() {
   if (!config.value) return;
   config.value.credential_id = "";
@@ -404,11 +389,11 @@ async function probeConnection() {
     if (!config.value) return;
     const caps = await api<{
       models: string[];
-      audit_recursion_protected: boolean;
     }>("/admin/connections/probe", "POST", { config: config.value });
     grokModels.value = caps.models;
-    connectionVerified.value = caps.audit_recursion_protected;
-    notice.value = "连接验证通过，允许模型：" + caps.models.join("、");
+    connectionVerified.value = true;
+    notice.value =
+      "模型列表已读取，可选择或手动填写模型后试跑：" + caps.models.join("、");
   });
 }
 async function createKey() {
@@ -834,29 +819,22 @@ window.addEventListener("beforeunload", (e) => {
               class="hint grok-connection"
             >
               <p>
-                复用 sub2api 中已授权的 Grok OAuth 账号。此处保存审核专用
-                sub2api API Key，Grok 登录及续期仍由 sub2api 管理。
+                填写 sub2api 提供的普通 API Key 和 Grok 模型名，直接调用
+                /v1/chat/completions。无需管理员登录、OAuth 授权或专用服务绑定。
               </p>
               <button
                 @click="probeConnection"
                 :disabled="busy || !credentialReady"
               >
-                验证连接并获取允许模型
+                读取模型列表（可选）
               </button>
-              <a
-                v-if="grokManagementURL"
-                :href="grokManagementURL"
-                target="_blank"
-                rel="noopener noreferrer"
-                >打开 sub2api 账号管理 ↗</a
-              >
               <p v-if="connectionVerified">
-                专用入口验证通过；防循环审核已启用。模型权益仍需试跑确认。
+                已读取标准 /v1/models
+                列表。接口未提供列表时也可手动填写模型，支持情况以试跑为准。
               </p>
               <p>
                 Grok 成本按套餐/网关额度管理，不套用 DeepSeek
-                单价。使用人民币预算时，没有可靠价格的请求会被拒绝；请先在
-                sub2api 设置专用 Key 配额和限流。
+                单价。当前无法确认逐次货币成本；启用了人民币预算的调用方可能因价格未知而被拒绝。
               </p>
             </div>
             <div class="form-grid">
@@ -867,9 +845,7 @@ window.addEventListener("beforeunload", (e) => {
                   :disabled="busy"
                 >
                   <option value="deepseek">DeepSeek</option>
-                  <option value="grok_via_sub2api">
-                    Grok（经 sub2api OAuth 账号）
-                  </option>
+                  <option value="grok_via_sub2api">Grok（sub2api API）</option>
                 </select></label
               >
               <label v-if="config.provider === 'grok_via_sub2api'"
@@ -944,8 +920,8 @@ window.addEventListener("beforeunload", (e) => {
                 >最大输出 tokens<input
                   v-model.number="config.max_tokens"
                   type="number"
-                  :min="config.provider === 'grok_via_sub2api' ? 128 : 64"
-                  :max="config.provider === 'grok_via_sub2api' ? 512 : 4096"
+                  min="64"
+                  max="4096"
                   :disabled="busy" /></label
               ><label
                 >审核记录保留（天）<input
@@ -1119,9 +1095,7 @@ window.addEventListener("beforeunload", (e) => {
                     "
                   >
                     <option value="deepseek">DeepSeek 官方 API</option>
-                    <option value="grok_via_sub2api">
-                      Grok · sub2api 专用服务
-                    </option>
+                    <option value="grok_via_sub2api">Grok · sub2api API</option>
                   </select></label
                 ><label v-if="credentialProvider === 'grok_via_sub2api'"
                   >sub2api 服务根地址<input
@@ -1131,8 +1105,8 @@ window.addEventListener("beforeunload", (e) => {
                     :readonly="!!credentialEditID"
                     placeholder="https://sub2api.example.com"
                   /><small class="muted"
-                    >服务器需通过 AUDIT_SUB2API_ORIGINS
-                    允许此地址。凭证保存后地址固定，换地址请新建连接。</small
+                    >审核系统的 AUDIT_SUB2API_ORIGINS 需允许此地址，sub2api
+                    无需新增配置。凭证保存后地址固定，换地址请新建连接。</small
                   ></label
                 >
                 <label
@@ -1145,7 +1119,7 @@ window.addEventListener("beforeunload", (e) => {
                   >{{
                     credentialProvider === "deepseek"
                       ? "DeepSeek API Key"
-                      : "sub2api 审核专用 API Key"
+                      : "sub2api API Key"
                   }}<input
                     v-model="credentialSecret"
                     type="password"

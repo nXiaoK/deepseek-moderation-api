@@ -59,9 +59,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 	}
 	defer res.Body.Close()
-	if cfg.ProviderID() == ProviderGrok && res.Header.Get(grokProtocolHeader) != grokProtocol {
-		return Assessment{}, attempt, problem(502, "unverified_grok_response", "响应不是受限 Grok 审核入口，已停止处理")
-	}
+
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return Assessment{}, attempt, problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
 	}
@@ -118,21 +116,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, versi
 	id := randomToken("audit_")
 	start := time.Now()
 	key, err := s.Store.CredentialForConfig(ctx, cfg)
-	if err == nil && cfg.ProviderID() == ProviderGrok {
-		caps, probeErr := s.Engine.ProbeGrok(ctx, cfg, key)
-		if probeErr != nil {
-			return Response{}, probeErr
-		}
-		found := false
-		for _, m := range caps.Models {
-			if m == cfg.Model {
-				found = true
-			}
-		}
-		if !found {
-			return Response{}, problem(403, "grok_model_not_allowed", "模型已不在 sub2api 审核分组的允许列表中")
-		}
-	}
+
 	var result Assessment
 	var usage Usage
 	var entry *CostReservation

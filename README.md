@@ -1,6 +1,6 @@
 # DeepSeek 内容审核系统
 
-现已支持 **Grok（复用 sub2api OAuth 账号）**，原 DeepSeek 策略默认不变。[Grok 连接配置与撤回说明](GROK_SETUP.zh.md)。新增功能在 `codex/grok-audit-provider` 分支，基线标签为 `baseline-before-grok-20260912`。
+现已支持 **Grok（直接调用 sub2api 标准 API）**，原 DeepSeek 策略默认不变。[Grok 连接配置与撤回说明](GROK_SETUP.zh.md)。新增功能在 `codex/grok-audit-provider` 分支，基线标签为 `baseline-before-grok-20260912`。
 
 独立审核 API 与 Vue 管理后台。采用用户提供的初始提示词，支持自由编辑、草稿试跑、原子发布与回滚；模型输出 `confidence` 和 `reason`，程序使用该发布版本的阈值决定是否命中。
 

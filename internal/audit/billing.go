@@ -14,6 +14,7 @@ import (
 )
 
 type CostReservation struct {
+	Provider                     string
 	ID, ClientID, Kind, PolicyID string
 	PolicyVersion                int
 	Model                        string
@@ -102,7 +103,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 			return nil, err
 		}
 	}
-	entry := &CostReservation{id, client, kind, p.ID, version, cfg.Model, card, at, reserved, cached}
+	entry := &CostReservation{Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, PolicyVersion: version, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -172,8 +173,8 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 		if entry.Price == nil {
 			status = "pending"
 			note = "模型单价未知，请核对供应商账单"
-			if strings.HasPrefix(entry.Model, "grok-") {
-				note = "Grok OAuth 额度由 sub2api 管理；未取得逐请求实际货币成本，不能按 DeepSeek 价格计算"
+			if entry.Provider == ProviderGrok {
+				note = "Grok 模型由 sub2api API 提供；未取得逐请求实际货币成本，不能按 DeepSeek 价格计算"
 			}
 		} else {
 			var err error
@@ -193,7 +194,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 		}
 	}
 	period := pricePeriod(entry.StartedAt)
-	if strings.HasPrefix(entry.Model, "grok-") {
+	if entry.Provider == ProviderGrok {
 		period = "gateway_managed"
 	}
 	if u.Attempted && entry.Price != nil && pricePeriod(entry.StartedAt) != pricePeriod(end) {
