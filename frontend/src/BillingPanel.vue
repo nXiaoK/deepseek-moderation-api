@@ -4,6 +4,7 @@ import AppIcon from "./AppIcon.vue";
 import {
   api,
   APIError,
+  ignoreAPIError,
   type ClientKey,
   type Credential,
   type CostView,
@@ -130,6 +131,7 @@ async function run(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     error.value = e instanceof Error ? e.message : "请求失败";
     if (e instanceof APIError && e.status === 401) emit("unauthorized");
   } finally {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
-import { api, type ModelChannel, type Credential } from "./api";
+import { api, ignoreAPIError, type ModelChannel, type Credential } from "./api";
 const props = defineProps<{
   channels: ModelChannel[];
   credentials: Credential[];
@@ -33,12 +33,16 @@ const health = (c: ModelChannel) =>
     ? "已停用"
     : !c.credential_active
       ? "密钥不可用"
-      : {
-          ready: "可用",
-          cooling: "冷却中",
-          half_open: "等待恢复试探",
-          configuration_error: "配置异常",
-        }[c.health.status] || c.health.status;
+      : c.health.status === "ready" && c.health.last_error_code
+        ? "可重试"
+        : c.health.status === "ready" && c.health.verified === false
+          ? "尚未验证"
+          : {
+              ready: "可用",
+              cooling: "冷却中",
+              half_open: "等待恢复试探",
+              configuration_error: "配置异常",
+            }[c.health.status] || c.health.status;
 function edit(c: ModelChannel) {
   form.value = {
     id: c.id,
@@ -62,6 +66,7 @@ async function work(fn: () => Promise<void>) {
     await fn();
     emit("changed");
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     emit("error", e instanceof Error ? e.message : "操作失败");
   } finally {
     busy.value = false;
@@ -153,11 +158,27 @@ async function remove(c: ModelChannel) {
                         c.health.status === 'configuration_error'
                       ? 'red'
                       : c.health.status === 'ready'
-                        ? 'green'
+                        ? c.health.verified === false
+                          ? 'gray'
+                          : c.health.last_error_code
+                            ? 'amber'
+                            : 'green'
                         : 'amber'
                 "
                 >{{ health(c) }}</span
               >
+              <small v-if="c.health.last_success_at"
+                >成功
+                {{
+                  new Date(c.health.last_success_at).toLocaleString("zh-CN", {
+                    timeZone: "Asia/Shanghai",
+                    hour12: false,
+                  })
+                }}</small
+              >
+              <small v-if="c.health.last_error_code">{{
+                c.health.last_error_code
+              }}</small>
             </td>
             <td>{{ c.health.in_flight }} / {{ c.max_concurrency }}</td>
             <td>{{ c.health.calls }} / {{ c.health.failures }}</td>

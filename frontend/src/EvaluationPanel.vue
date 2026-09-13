@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   api,
   APIError,
+  ignoreAPIError,
   downloadFile,
   type Config,
   type Policy,
@@ -197,6 +198,7 @@ async function work(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     if (!disposed) {
       error.value = e instanceof Error ? e.message : "操作失败";
       if (e instanceof APIError && e.status === 401) emit("unauthorized");
@@ -239,6 +241,7 @@ async function poll() {
       if (nextDetail) detail.value = nextDetail;
     }
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     if (!disposed) {
       error.value = e instanceof Error ? e.message : "评测刷新失败";
       if (e instanceof APIError && e.status === 401) emit("unauthorized");

@@ -914,13 +914,11 @@ test("policies can be archived restored and imported as disabled", async ({
     alias: "portable-policy",
     config,
   };
-  await page
-    .getByLabel("选择策略配置文件", { exact: true })
-    .setInputFiles({
-      name: "policy.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify(file)),
-    });
+  await page.getByLabel("选择策略配置文件", { exact: true }).setInputFiles({
+    name: "policy.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(file)),
+  });
   const modal = page.getByRole("dialog", { name: "导入策略配置", exact: true });
   await modal.getByLabel("策略名称", { exact: true }).fill("导入结果");
   await modal.getByLabel("模型别名", { exact: true }).fill("imported-policy");
@@ -931,6 +929,138 @@ test("policies can be archived restored and imported as disabled", async ({
     "aria-checked",
     "false",
   );
+});
+
+test("operations alerts link to the affected workspace", async ({ page }) => {
+  await page.route("**/admin/operations", (route) =>
+    route.fulfill({
+      json: {
+        uptime_seconds: 7200,
+        runtime: {
+          model_concurrency: 16,
+          request_concurrency: 32,
+          request_body_mib: 128,
+          trial_concurrency: 2,
+          max_images: 16,
+        },
+        active_requests: 2,
+        request_body_bytes: 1048576,
+        model_in_flight: 16,
+        trial_in_flight: 1,
+        migration_version: 3,
+        pending_costs: 2,
+        estimated_costs: 1,
+        running_evaluations: 0,
+        database: {
+          open: 5,
+          in_use: 2,
+          idle: 3,
+          limit: 20,
+          wait_count: 1,
+          wait_ms: 12,
+        },
+        alerts: [
+          {
+            id: "model-capacity",
+            severity: "warning",
+            message: "上游模型并发已满",
+            page: "channels",
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  await navigate(page, "系统设置");
+  await expect(
+    page.getByRole("heading", { name: "运行状态", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("上游模型并发已满", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "查看上游模型并发已满", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "审核模型", level: 1 }),
+  ).toBeVisible();
+});
+
+test("session expiry closes sensitive editors", async ({ page }) => {
+  await page.route("**/admin/api-keys/client-1", (route) =>
+    route.fulfill({ status: 401, json: { error: { message: "登录已过期" } } }),
+  );
+  await page.goto("/");
+  await navigate(page, "访问密钥");
+  await page
+    .getByRole("button", { name: "编辑访问密钥 生产应用", exact: true })
+    .click();
+  await page.getByRole("button", { name: "保存访问密钥", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "登录控制台", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("a late old-session response cannot sign out a new session", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let analyticsRequests = 0;
+  await page.route("**/admin/analytics?*", async (route) => {
+    if (++analyticsRequests > 1)
+      return route.fulfill({ json: analytics(new URL(route.request().url())) });
+    await pending;
+    await route.fulfill({
+      status: 401,
+      json: { error: { message: "旧会话已过期" } },
+    });
+  });
+  await page.route("**/admin/auth/logout", (route) =>
+    route.fulfill({ json: { ok: true } }),
+  );
+  await page.route("**/admin/auth/login", (route) =>
+    route.fulfill({ json: { username: "admin", csrf: "new-session-csrf" } }),
+  );
+  await page.goto("/");
+  await navigate(page, "数据分析");
+  await expect(page.locator(".analytics-skeleton")).toBeVisible();
+  await page.getByRole("button", { name: "退出登录", exact: true }).click();
+  await page.getByLabel("密码", { exact: true }).fill("test-login-only");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  const old = page.waitForResponse(
+    (response) =>
+      response.url().includes("/admin/analytics?") && response.status() === 401,
+  );
+  release();
+  await (await old).finished();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator(".login-shell")).toHaveCount(0);
+});
+
+test("invalid JSON is reported without treating it as application data", async ({
+  page,
+}) => {
+  await page.route("**/admin/analytics?*", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<html>invalid response</html>",
+    }),
+  );
+  await page.goto("/");
+  await navigate(page, "数据分析");
+  await expect(page.getByRole("alert")).toContainText("服务返回了无效响应");
+  await expect(page.locator(".app-shell")).toBeVisible();
 });
 
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {

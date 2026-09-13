@@ -1,4 +1,11 @@
 export type Provider = "deepseek" | "grok_via_sub2api";
+export interface RuntimeLimits {
+  model_concurrency: number;
+  request_concurrency: number;
+  request_body_mib: number;
+  trial_concurrency: number;
+  max_images: number;
+}
 export interface AnalysisLogFilter {
   from: string;
   to: string;
@@ -53,6 +60,10 @@ export interface ModelChannel {
   revision: number;
   policy_names: string[];
   health: {
+    verified?: boolean;
+    last_success_at?: string;
+    last_failure_at?: string;
+    last_error_code?: string;
     status: string;
     in_flight: number;
     calls: number;
@@ -163,6 +174,10 @@ export interface AuditLog {
   created_at: string;
 }
 let csrf = "";
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
 export function setCSRF(token: string) {
   csrf = token;
 }
@@ -170,9 +185,16 @@ export class APIError extends Error {
   constructor(
     public status: number,
     message: string,
+    public staleSession = false,
   ) {
     super(message);
   }
+}
+export function ignoreAPIError(error: unknown) {
+  return (
+    (error instanceof APIError && error.staleSession) ||
+    (error instanceof DOMException && error.name === "AbortError")
+  );
 }
 export async function api<T>(
   path: string,
@@ -180,21 +202,37 @@ export async function api<T>(
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<T> {
+  const requestCSRF = csrf;
   const response = await fetch(path, {
     signal,
     method,
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+      ...(requestCSRF ? { "X-CSRF-Token": requestCSRF } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const data = await response
-    .json()
-    .catch(() => ({ error: { message: "服务返回了无效响应" } }));
-  if (!response.ok)
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (response.ok)
+      throw new APIError(502, "服务返回了无效响应", requestCSRF !== csrf);
+    data = {
+      error: {
+        message: response.status === 401 ? "登录已过期" : "服务返回了无效响应",
+      },
+    };
+  }
+  if (requestCSRF !== csrf)
+    throw new APIError(response.status, "会话已更新，旧请求已忽略", true);
+  if (!response.ok) {
+    if (response.status === 401 && path !== "/admin/auth/login")
+      unauthorizedHandler?.();
     throw new APIError(response.status, data.error?.message || "请求失败");
+  }
   return data as T;
 }
 export async function downloadFile(
@@ -202,12 +240,21 @@ export async function downloadFile(
   filename: string,
   signal?: AbortSignal,
 ) {
+  const requestCSRF = csrf;
   const response = await fetch(path, { credentials: "same-origin", signal });
+  if (requestCSRF !== csrf)
+    throw new APIError(response.status, "会话已更新，旧请求已忽略", true);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    if (requestCSRF !== csrf)
+      throw new APIError(response.status, "会话已更新，旧请求已忽略", true);
+    if (response.status === 401) unauthorizedHandler?.();
     throw new APIError(response.status, body?.error?.message || "下载失败");
   }
-  const url = URL.createObjectURL(await response.blob());
+  const blob = await response.blob();
+  if (requestCSRF !== csrf)
+    throw new APIError(response.status, "会话已更新，旧请求已忽略", true);
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;

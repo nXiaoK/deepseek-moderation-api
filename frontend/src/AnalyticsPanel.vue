@@ -6,6 +6,7 @@ import DataChart from "./DataChart.vue";
 import {
   api,
   APIError,
+  ignoreAPIError,
   type Policy,
   type ClientKey,
   type ModelChannel,
@@ -254,6 +255,7 @@ async function load() {
     data.value = result;
     availableModels.value = result.available_models;
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     error.value = e instanceof Error ? e.message : "分析数据加载失败";
     if (e instanceof APIError && e.status === 401) emit("unauthorized");
   } finally {

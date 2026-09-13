@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
 import {
   api,
+  ignoreAPIError,
   type Config,
   type Policy,
   type ModelChannel,
@@ -15,6 +16,7 @@ const props = defineProps<{
   policy: Policy;
   channels: ModelChannel[];
   busy: boolean;
+  maxImages?: number;
 }>();
 const emit = defineEmits<{ models: []; error: [string] }>();
 const tab = ref("rules"),
@@ -24,6 +26,7 @@ const tab = ref("rules"),
   result = ref<AuditResponse | null>(null),
   testError = ref("");
 const images = ref<{ url: string; detail: string }[]>([]);
+const imageLimit = computed(() => props.maxImages || 16);
 const imageURL = ref("");
 const fileInput = ref<HTMLInputElement>();
 const readingImages = ref(false);
@@ -37,7 +40,8 @@ function addImageURL() {
       url.href.length > 8192
     )
       throw new Error("图片 URL 无效");
-    if (images.value.length >= 16) throw new Error("最多添加 16 张图片");
+    if (images.value.length >= imageLimit.value)
+      throw new Error("最多添加 " + imageLimit.value + " 张图片");
     images.value.push({ url: url.href, detail: "auto" });
     imageURL.value = "";
     testError.value = "";
@@ -52,8 +56,8 @@ async function uploadImages(event: Event) {
   if (!files.length) return;
   readingImages.value = true;
   try {
-    if (images.value.length + files.length > 16)
-      throw new Error("最多添加 16 张图片");
+    if (images.value.length + files.length > imageLimit.value)
+      throw new Error("最多添加 " + imageLimit.value + " 张图片");
     if (
       files.some(
         (file) =>
@@ -137,6 +141,7 @@ async function test() {
       body,
     );
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     testError.value = e instanceof Error ? e.message : "试跑失败";
     emit("error", testError.value);
   } finally {

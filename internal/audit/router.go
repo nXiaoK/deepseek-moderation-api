@@ -18,20 +18,27 @@ import (
 )
 
 type ChannelHealth struct {
-	Status        string    `json:"status"`
-	InFlight      int       `json:"in_flight"`
-	Calls         int64     `json:"calls"`
-	Failures      int64     `json:"failures"`
-	CooldownUntil time.Time `json:"cooldown_until,omitempty"`
+	Verified              bool       `json:"verified"`
+	LastSuccessAt         *time.Time `json:"last_success_at,omitempty"`
+	LastFailureAt         *time.Time `json:"last_failure_at,omitempty"`
+	LastErrorCode         string     `json:"last_error_code,omitempty"`
+	ConfigurationRevision int64      `json:"-"`
+	Status                string     `json:"status"`
+	InFlight              int        `json:"in_flight"`
+	Calls                 int64      `json:"calls"`
+	Failures              int64      `json:"failures"`
+	CooldownUntil         time.Time  `json:"cooldown_until,omitempty"`
 }
 type channelState struct {
-	revision         int64
-	signature        string
-	inFlight         int
-	consecutive      int
-	calls, failures  int64
-	until            time.Time
-	permanent, probe bool
+	lastSuccess, lastFailure time.Time
+	lastError                string
+	revision                 int64
+	signature                string
+	inFlight                 int
+	consecutive              int
+	calls, failures          int64
+	until                    time.Time
+	permanent, probe         bool
 }
 type routeCandidate struct {
 	channel        ModelChannel
@@ -114,6 +121,8 @@ func (e *Engine) resetChannel(id string) {
 		st.permanent = false
 		st.probe = false
 		st.consecutive = 0
+		st.lastSuccess, st.lastFailure = time.Time{}, time.Time{}
+		st.lastError = ""
 	}
 }
 func (e *Engine) channelHealth(id string) ChannelHealth {
@@ -125,6 +134,17 @@ func (e *Engine) channelHealth(id string) ChannelHealth {
 		h.Calls = st.calls
 		h.Failures = st.failures
 		h.CooldownUntil = st.until
+		h.ConfigurationRevision = st.revision
+		h.Verified = !st.lastSuccess.IsZero()
+		if !st.lastSuccess.IsZero() {
+			value := st.lastSuccess
+			h.LastSuccessAt = &value
+		}
+		if !st.lastFailure.IsZero() {
+			value := st.lastFailure
+			h.LastFailureAt = &value
+		}
+		h.LastErrorCode = st.lastError
 		if st.permanent {
 			h.Status = "configuration_error"
 		} else if st.until.After(time.Now()) {
@@ -166,6 +186,8 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 			st.permanent = false
 			st.probe = false
 			st.consecutive = 0
+			st.lastSuccess, st.lastFailure = time.Time{}, time.Time{}
+			st.lastError = ""
 		}
 		if st.permanent || st.until.After(now) || st.probe || st.inFlight >= c.channel.MaxConcurrency {
 			continue
@@ -214,12 +236,24 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 		}
 		wasProbe := st.probe
 		st.probe = false
+		if !sent {
+			return
+		}
 		if err == nil {
+			st.lastSuccess = time.Now().UTC()
+			st.lastError = ""
 			st.consecutive = 0
 			st.until = time.Time{}
 			return
 		}
-		if !sent {
+		st.lastFailure = time.Now().UTC()
+		st.lastError = errorCode(err)
+		if errors.Is(err, context.Canceled) {
+			st.lastError = "request_cancelled"
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			st.lastError = "audit_timeout"
 			return
 		}
 		st.consecutive++
@@ -563,7 +597,8 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
 		}
 		if ctx.Err() != nil {
-			release(ctx.Err(), false)
+			release(ctx.Err(), usage.Attempted)
+			e = problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")
 		} else {
 			release(e, usage.Attempted)
 		}

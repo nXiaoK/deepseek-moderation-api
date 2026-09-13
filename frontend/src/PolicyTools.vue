@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { api, APIError, downloadFile, type Policy, type Config } from "./api";
+import {
+  api,
+  APIError,
+  ignoreAPIError,
+  downloadFile,
+  type Policy,
+  type Config,
+} from "./api";
 import AppIcon from "./AppIcon.vue";
 const props = defineProps<{
   selected: Policy | null;
@@ -30,6 +37,7 @@ async function work(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     failure.value = e instanceof Error ? e.message : "操作失败";
     emit("error", failure.value);
     if (e instanceof APIError && e.status === 401) emit("unauthorized");

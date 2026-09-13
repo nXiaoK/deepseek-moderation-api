@@ -4,6 +4,7 @@ import {
   defineAsyncComponent,
   nextTick,
   onMounted,
+  onBeforeUnmount,
   ref,
   watch,
 } from "vue";
@@ -11,6 +12,7 @@ import AppIcon from "./AppIcon.vue";
 import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
 import PolicyTools from "./PolicyTools.vue";
+import OperationsPanel from "./OperationsPanel.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
 import {
@@ -27,6 +29,8 @@ import {
   api,
   APIError,
   setCSRF,
+  setUnauthorizedHandler,
+  ignoreAPIError,
   type AuditLog,
   type ClientKey,
   type Config,
@@ -35,6 +39,7 @@ import {
   type Provider,
   type ModelChannel,
   type AnalysisLogFilter,
+  type RuntimeLimits,
 } from "./api";
 
 const AnalyticsPanel = defineAsyncComponent(
@@ -90,6 +95,13 @@ const policies = ref<Policy[]>([]),
   policyName = ref(""),
   baseline = ref("");
 const archivedPolicies = ref<Policy[]>([]);
+const runtime = ref<RuntimeLimits>({
+  model_concurrency: 16,
+  request_concurrency: 32,
+  request_body_mib: 128,
+  trial_concurrency: 2,
+  max_images: 16,
+});
 const allPolicies = computed(() => [
   ...policies.value,
   ...archivedPolicies.value,
@@ -260,11 +272,8 @@ async function run(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
+    if (ignoreAPIError(e)) return;
     error.value = message(e);
-    if (e instanceof APIError && e.status === 401) {
-      user.value = "";
-      setCSRF("");
-    }
   } finally {
     busy.value = false;
   }
@@ -280,17 +289,19 @@ async function loadPolicy(id: string) {
   usePolicy(p);
 }
 async function refresh() {
-  const [ps, cs, ks, chs] = await Promise.all([
+  const [ps, cs, ks, chs, limits] = await Promise.all([
     api<Policy[]>("/admin/policies?include_archived=1"),
     api<Credential[]>("/admin/credentials"),
     api<ClientKey[]>("/admin/api-keys"),
     api<ModelChannel[]>("/admin/model-channels"),
+    api<RuntimeLimits>("/admin/runtime"),
   ]);
   policies.value = ps.filter((p) => !p.archived);
   archivedPolicies.value = ps.filter((p) => p.archived);
   credentials.value = cs;
   keys.value = ks;
   channels.value = chs;
+  runtime.value = limits;
   if (!selected.value && policies.value[0]) {
     await loadPolicy(policies.value[0].id);
     keyPolicies.value = [policies.value[0].id];
@@ -341,13 +352,36 @@ async function login() {
 async function logout() {
   await run(async () => {
     await api("/admin/auth/logout", "POST", {});
-    user.value = "";
-    setCSRF("");
-    selected.value = null;
-    config.value = null;
-    newToken.value = "";
+    clearSession();
   });
 }
+function clearSession() {
+  user.value = "";
+  setCSRF("");
+  selected.value = null;
+  config.value = null;
+  baseline.value = "";
+  creating.value = false;
+  detail.value = null;
+  keyEditor.value = null;
+  newToken.value = "";
+  credentialSecret.value = "";
+  credentialEditID.value = "";
+  credentialName.value = "";
+  currentPassword.value = "";
+  newPassword.value = "";
+  password.value = "";
+  policies.value = [];
+  archivedPolicies.value = [];
+  channels.value = [];
+  credentials.value = [];
+  keys.value = [];
+  keyPolicies.value = [];
+  keyName.value = "";
+  keyExpires.value = "";
+}
+setUnauthorizedHandler(clearSession);
+onBeforeUnmount(() => setUnauthorizedHandler(null));
 async function selectPolicy(event: Event) {
   const id = (event.target as HTMLSelectElement).value;
   if (
@@ -620,10 +654,7 @@ async function changePassword() {
       current: currentPassword.value,
       password: newPassword.value,
     });
-    user.value = "";
-    setCSRF("");
-    currentPassword.value = "";
-    newPassword.value = "";
+    clearSession();
     notice.value = "密码已更新，请重新登录。";
   });
 }
@@ -776,7 +807,11 @@ window.addEventListener("beforeunload", (e) => {
           >
             <AppIcon name="plus" :size="16" />新建策略</button
           ><button
-            v-else-if="page !== 'billing' && page !== 'analytics'"
+            v-else-if="
+              !['billing', 'analytics', 'evaluations', 'settings'].includes(
+                page,
+              )
+            "
             @click="navigate(page)"
             :disabled="busy"
             class="icon-button"
@@ -850,6 +885,7 @@ window.addEventListener("beforeunload", (e) => {
             :policy="selected"
             :channels="channels"
             :busy="busy"
+            :max-images="runtime.max_images"
             @models="navigate('channels')"
             @error="error = $event"
           />
@@ -1434,7 +1470,8 @@ window.addEventListener("beforeunload", (e) => {
         ></template>
 
         <template v-if="page === 'settings'"
-          ><section class="panel settings-panel">
+          ><OperationsPanel @navigate="navigate" />
+          <section class="panel settings-panel">
             <div class="panel-heading"><h2>管理员账户</h2></div>
             <form class="stack-form narrow" @submit.prevent="changePassword">
               <label

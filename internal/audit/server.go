@@ -39,6 +39,7 @@ type Server struct {
 	evaluationCancels map[string]context.CancelFunc
 	evaluationWorkers sync.WaitGroup
 	closing           bool
+	startedAt         time.Time
 }
 type session struct {
 	Username  string
@@ -68,7 +69,7 @@ func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*
 		return nil, err
 	}
 	background, stop := context.WithCancel(context.Background())
-	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop}, nil
+	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop, startedAt: time.Now()}, nil
 }
 func (s *Server) Close() {
 	s.evaluationMu.Lock()
@@ -127,6 +128,8 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/audit-logs", s.logs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
 	admin("GET /admin/analytics", s.analytics)
+	admin("GET /admin/operations", s.operations)
+	admin("GET /admin/runtime", func(w http.ResponseWriter, r *http.Request) error { return writeJSON(w, 200, s.Runtime) })
 	admin("GET /admin/evaluation/samples", s.evaluationSamples)
 	admin("GET /admin/evaluation/samples/{id}", s.evaluationSample)
 	admin("POST /admin/evaluation/samples", s.saveEvaluationSample)
@@ -168,6 +171,8 @@ func (s *Server) Handler() http.Handler {
 }
 func (s *Server) wrap(fn endpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		requestID := randomToken("req_")
+		w.Header().Set("X-Request-ID", requestID)
 		ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 		defer cancel()
 		r = r.WithContext(ctx)
@@ -177,7 +182,12 @@ func (s *Server) wrap(fn endpoint) http.HandlerFunc {
 			if errors.As(err, &custom) {
 				ae = custom
 			} else {
-				slog.Error("request failed", "method", r.Method, "path", r.URL.Path)
+				state := ""
+				var sqlState interface{ SQLState() string }
+				if errors.As(err, &sqlState) {
+					state = sqlState.SQLState()
+				}
+				slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "request_id", requestID, "error_type", fmt.Sprintf("%T", err), "sqlstate", state)
 			}
 			if ae.Status == 429 {
 				w.Header().Set("Retry-After", "60")

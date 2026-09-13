@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_tokens,c.max_concurrency,c.enabled,c.revision,c.cache_epoch,k.provider,k.base_url,k.active,c.text_only`
@@ -185,9 +186,26 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	for i := range items {
-		items[i].Health = s.Engine.channelHealth(items[i].ID)
+		items[i].Health = s.currentChannelHealth(items[i])
 	}
 	return writeJSON(w, 200, items)
+}
+func (s *Server) currentChannelHealth(c ModelChannel) ChannelHealth {
+	health := s.Engine.channelHealth(c.ID)
+	if health.ConfigurationRevision != c.Revision {
+		health.Status = "ready"
+		health.Verified = false
+		health.LastSuccessAt = nil
+		health.LastFailureAt = nil
+		health.LastErrorCode = ""
+		health.CooldownUntil = time.Time{}
+	}
+	if err := c.Inference(DefaultSettings()).Validate(); err != nil {
+		health.Status = "configuration_error"
+		health.Verified = false
+		health.LastErrorCode = "invalid_config"
+	}
+	return health
 }
 func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
