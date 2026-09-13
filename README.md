@@ -169,4 +169,6 @@ pnpm build
 
 “连接密钥 → DeepSeek（官方 / 第三方）”支持填写 HTTP(S) 根地址或 `/v1` 地址，例如 `https://api.example.com/v1`；第三方请求统一发送到 `/v1/chat/completions`，不会重复拼接 `/v1`。官方地址仍使用原 `/chat/completions`。第三方服务需支持模型当前的 Chat Completions 参数和 JSON 输出格式。
 
+Responses 通道在顶层 `instructions` 中保留策略提示词，并在 `input` 中单独添加 developer 消息，要求输出包含 `confidence` 和 `reason` 的 JSON 对象。这样兼容只检查输入消息中是否包含 `json` 的第三方网关；待审文本和图片仍放在独立的 user 消息中。更新后如通道仍显示配置异常，点击“清缓存 / 重试连接”后再试跑。
+
 地址与凭证绑定，已保存凭证更换地址时请新建连接，再修改模型通道的连接密钥。第三方实际价格未知，费用标记待核对，不套用官方价；启用人民币预算的调用方不会选择第三方通道。

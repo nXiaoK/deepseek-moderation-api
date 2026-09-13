@@ -48,6 +48,81 @@ func TestThirdPartyGPTDoesNotReceiveTemperature(t *testing.T) {
 	}
 }
 
+func TestResponsesJSONModeChecksInputMessages(t *testing.T) {
+	t.Setenv("AUDIT_SUB2API_ORIGINS", "https://sub2api.test")
+	for _, prompt := range []string{InitialPrompt, "只判断网络滥用，正常内容放行。"} {
+		for _, scenario := range []string{"text", "image", "image_only", "text_only_channel"} {
+			t.Run(scenario+prompt[:6], func(t *testing.T) {
+				cfg := grokTestConfig()
+				cfg.Model, cfg.Prompt = "gpt-5.6-luna", prompt
+				cfg.TextOnly = scenario == "text_only_channel"
+				input := "请检查这段内容"
+				var images []AuditImage
+				if scenario != "text" {
+					images = []AuditImage{{URL: "https://example.com/image.png"}}
+				}
+				if scenario == "image_only" {
+					input = ""
+				}
+				engine := NewEngine(1)
+				engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+					var body struct {
+						Instructions string `json:"instructions"`
+						Input        []struct {
+							Role    string          `json:"role"`
+							Content json.RawMessage `json:"content"`
+						} `json:"input"`
+						Text struct {
+							Format struct {
+								Type string `json:"type"`
+							} `json:"format"`
+						} `json:"text"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					if body.Instructions != prompt || body.Text.Format.Type != "json_object" {
+						t.Fatal("policy or JSON mode changed")
+					}
+					// Reproduce gateways that ignore instructions when validating JSON mode.
+					foundJSON := false
+					for _, message := range body.Input {
+						foundJSON = foundJSON || strings.Contains(strings.ToLower(string(message.Content)), "json")
+					}
+					if !foundJSON {
+						return &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"detail":"Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'."}`))}, nil
+					}
+					if len(body.Input) != 2 || body.Input[0].Role != "developer" || body.Input[1].Role != "user" {
+						t.Fatal("output contract was not separated from user input")
+					}
+					if !strings.Contains(string(body.Input[0].Content), "confidence") || !strings.Contains(string(body.Input[0].Content), "reason") {
+						t.Fatal("missing audit output fields")
+					}
+					var userText string
+					if scenario == "text" || cfg.TextOnly {
+						if json.Unmarshal(body.Input[1].Content, &userText) != nil {
+							t.Fatal("text-only content changed")
+						}
+					} else {
+						var content []map[string]string
+						if json.Unmarshal(body.Input[1].Content, &content) != nil || len(content) != 2 || content[1]["image_url"] != images[0].URL {
+							t.Fatal("image content changed")
+						}
+						userText = content[0]["text"]
+					}
+					if userText != "<user_input>"+input+"</user_input>" {
+						t.Fatal("audit material was modified")
+					}
+					return grokStreamResponse(grokSSE(`{"confidence":0.1,"reason":"正常请求"}`, "")), nil
+				})}
+				if _, _, _, err := engine.Assess(context.Background(), cfg, "test-key", input, images...); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func TestUpstreamErrorDetail(t *testing.T) {
 	for _, tt := range []struct{ name, body, want string }{
 		{"fastapi", `{"detail":"Unsupported parameter: temperature"}`, "Unsupported parameter: temperature"},

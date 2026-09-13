@@ -81,6 +81,11 @@ func (c PolicyConfig) providerLabel() string {
 const grokStreamLimit = 262144
 const grokOutputLimit = 65536
 
+// Some Responses gateways enforce JSON mode by inspecting input messages only,
+// ignoring the top-level instructions. Keep the transport contract separate
+// from both the administrator's policy and the untrusted material being audited.
+const auditJSONOutputInstruction = `Return only a JSON object with exactly two fields: "confidence" (a number from 0 to 1) and "reason" (a string of at most 80 Unicode characters). Apply the configured audit policy. Do not include Markdown or any additional fields.`
+
 type grokResponse struct {
 	ID         string          `json:"id"`
 	Model      string          `json:"model"`
@@ -98,12 +103,12 @@ type grokResponse struct {
 }
 
 func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input string, images ...AuditImage) (Assessment, Usage, string, error) {
+	var userContent any = "<user_input>" + input + "</user_input>"
 	payload := map[string]any{
 		"model":             cfg.Model,
 		"stream":            true,
 		"max_output_tokens": cfg.MaxTokens,
 		"instructions":      cfg.Prompt,
-		"input":             "<user_input>" + input + "</user_input>",
 		"text":              map[string]any{"format": map[string]string{"type": "json_object"}},
 		"reasoning":         map[string]string{"effort": "none"},
 	}
@@ -116,7 +121,11 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 			}
 			content = append(content, part)
 		}
-		payload["input"] = []map[string]any{{"role": "user", "content": content}}
+		userContent = content
+	}
+	payload["input"] = []map[string]any{
+		{"role": "developer", "content": auditJSONOutputInstruction},
+		{"role": "user", "content": userContent},
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

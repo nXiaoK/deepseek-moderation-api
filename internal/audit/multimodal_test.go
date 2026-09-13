@@ -40,17 +40,15 @@ func TestMultimodalProviderPayloads(t *testing.T) {
 								t.Fatal("wrong chat messages")
 							}
 							content = messages[1].Content
-						} else if textOnly {
-							content = payload["input"]
 						} else {
 							var messages []struct {
 								Role    string
 								Content json.RawMessage
 							}
-							if json.Unmarshal(payload["input"], &messages) != nil || len(messages) != 1 || messages[0].Role != "user" {
+							if json.Unmarshal(payload["input"], &messages) != nil || len(messages) != 2 || messages[0].Role != "developer" || messages[1].Role != "user" {
 								t.Fatal("wrong responses input")
 							}
-							content = messages[0].Content
+							content = messages[1].Content
 						}
 						if textOnly {
 							var got string
