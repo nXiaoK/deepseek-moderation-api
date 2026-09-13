@@ -270,10 +270,10 @@ async function remove(c: ModelChannel) {
             connection.provider === 'deepseek' &&
             connection.base_url !== 'https://api.deepseek.com'
           "
-          ><br />第三方接口费用待核对，不套用官方价格；设置人民币预算的调用方不会选用此通道。</template
+          ><br />第三方接口按配置模型名对应的单价计费；配置单价后，文本请求可参与人民币预算。</template
         ><template v-if="connection.provider === 'grok_via_sub2api'"
           ><br />Grok 使用 sub2api 标准 Responses
-          API。当前费用无法可靠预估，设置人民币预算的调用方不会选用此通道。</template
+          API。配置模型单价后，文本请求可参与人民币预算；无单价的调用费用需核对。</template
         >
       </p>
       <label class="check-row">
