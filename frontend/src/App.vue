@@ -1377,14 +1377,16 @@ window.addEventListener("beforeunload", (e) => {
       </dl>
       <AttemptList :attempts="detail.attempts || []" />
       <template v-if="showStandaloneOutput">
-        <h3>模型返回</h3>
+        <h3>
+          {{ detail.model_output_stored ? "模型原始输出" : "结构化判定" }}
+        </h3>
         <p v-if="detail.error_code && detailModelOutput" class="hint">
           以下为当时保存的模型原始输出（已脱敏）。审核失败时，原始评分不作为有效判定。
         </p>
         <pre v-if="detailModelOutput" class="input-detail">{{
           detailModelOutput
         }}</pre>
-        <p v-else class="hint">此请求没有保存模型返回内容。</p>
+        <p v-else class="hint">此请求的模型原始输出未保存或已过期。</p>
       </template>
       <h3>审核输入</h3>
       <p v-if="detail.request?.text_only_fallback" class="hint">

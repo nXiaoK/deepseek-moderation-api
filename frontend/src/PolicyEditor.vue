@@ -231,6 +231,28 @@ async function test() {
         ></span
       ></label
     >
+    <label class="check-row"
+      ><input
+        v-model="config.store_model_output"
+        type="checkbox"
+        :disabled="busy"
+      /><span
+        >加密保存模型原始输出<small
+          >关闭后仅保留评分、原因和错误信息；原始输出可单独设置保留期。</small
+        ></span
+      ></label
+    >
+    <div v-if="config.store_model_output" class="form-grid">
+      <label
+        >模型原始输出保留（天）<input
+          v-model.number="config.model_output_retention_days"
+          type="number"
+          min="1"
+          max="365"
+          :disabled="busy"
+        /><small>实际保留期不超过审核记录保留期。</small></label
+      >
+    </div>
   </section>
   <section v-if="tab === 'routing'" class="panel config-panel">
     <div class="panel-heading">

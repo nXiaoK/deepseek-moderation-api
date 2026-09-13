@@ -7,6 +7,8 @@ const modelNames = [
   "grok-3-mini",
 ];
 export const config = {
+  store_model_output: false,
+  model_output_retention_days: 7,
   prompt: "你是内容审核员。根据审核策略输出 JSON，包含 confidence 与 reason。",
   threshold: 0.8,
   store_input: false,

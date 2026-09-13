@@ -124,6 +124,13 @@ func scanPolicy(row scanner) (Policy, error) {
 		return p, err
 	}
 	err = json.Unmarshal(raw, &p.Config)
+	if p.Config.StoreModelOutput == nil {
+		enabled := true
+		p.Config.StoreModelOutput = &enabled
+	}
+	if p.Config.ModelOutputRetentionDays == 0 {
+		p.Config.ModelOutputRetentionDays = p.Config.RetentionDays
+	}
 	return p, err
 }
 
@@ -384,11 +391,15 @@ func (s *Store) Record(ctx context.Context, l AuditLog, text string, days int) e
 	if l.InputStored {
 		encrypted = s.Vault.Seal(text, "input:"+l.ID)
 	}
+	output, outputExpiry, err := s.prepareModelOutput(&l, days)
+	if err != nil {
+		return err
+	}
 	raw, err := json.Marshal(l)
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO audit_requests(id,kind,policy_id,client_id,flagged,error_code,metadata,input_cipher,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", l.ID, l.Kind, l.PolicyID, l.ClientID, l.Flagged, l.ErrorCode, string(raw), encrypted, time.Now().Add(time.Duration(days)*24*time.Hour))
+	_, err = s.DB.ExecContext(ctx, "INSERT INTO audit_requests(id,kind,policy_id,client_id,flagged,error_code,metadata,input_cipher,expires_at,output_cipher,output_expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", l.ID, l.Kind, l.PolicyID, l.ClientID, l.Flagged, l.ErrorCode, string(raw), encrypted, time.Now().Add(time.Duration(days)*24*time.Hour), output, outputExpiry)
 	return err
 }
 func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) {
@@ -480,9 +491,9 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 	return logs, count, nil
 }
 func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
-	var raw, cipher []byte
+	var raw, cipher, output []byte
 	var l AuditLog
-	err := s.DB.QueryRowContext(ctx, "SELECT metadata,input_cipher,created_at FROM audit_requests WHERE id=$1 AND expires_at>NOW()", id).Scan(&raw, &cipher, &l.CreatedAt)
+	err := s.DB.QueryRowContext(ctx, "SELECT metadata,input_cipher,created_at,CASE WHEN output_expires_at>NOW() THEN output_cipher END FROM audit_requests WHERE id=$1 AND expires_at>NOW()", id).Scan(&raw, &cipher, &l.CreatedAt, &output)
 	if errors.Is(err, sql.ErrNoRows) {
 		return l, ErrNotFound
 	}
@@ -494,6 +505,9 @@ func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
 		return l, err
 	}
 	l.CreatedAt = created
+	if err := s.restoreModelOutput(&l, output); err != nil {
+		return l, err
+	}
 	if len(cipher) > 0 {
 		l.Input, err = s.Vault.Open(cipher, "input:"+id)
 	}
@@ -519,6 +533,9 @@ func (s *Store) Overview(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"requests": count, "flagged": hits, "errors": fail, "tokens": tokens, "avg_latency_ms": avg, "p95_latency_ms": p95}, err
 }
 func (s *Store) Cleanup(ctx context.Context) error {
+	if _, err := s.DB.ExecContext(ctx, `UPDATE audit_requests SET output_cipher=NULL,output_expires_at=NULL,metadata=jsonb_set(metadata,'{model_output_stored}','false'::jsonb) WHERE output_cipher IS NOT NULL AND output_expires_at<NOW()`); err != nil {
+		return err
+	}
 	for _, query := range []string{"UPDATE audit_costs SET status='pending',note='请求结算中断，预留费用待核对' WHERE status='reserved' AND started_at<NOW()-INTERVAL '2 minutes'", "DELETE FROM assessment_cache WHERE expires_at<NOW()", "DELETE FROM audit_requests WHERE expires_at<NOW()", "DELETE FROM admin_sessions WHERE expires_at<NOW()", "DELETE FROM rate_limits WHERE starts_at<NOW()-INTERVAL '1 day'", "DELETE FROM admin_action_logs WHERE created_at<NOW()-INTERVAL '365 days'"} {
 		if _, err := s.DB.ExecContext(ctx, query); err != nil {
 			return err

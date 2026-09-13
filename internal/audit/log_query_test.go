@@ -12,7 +12,7 @@ func TestLogFiltersAndBatchCosts(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		id := fmt.Sprintf("audit_search_%d", i)
-		l := AuditLog{ID: id, Kind: "production", Model: "model-a", ChannelID: "final", ModelOutput: "private output", Attempts: []AuditAttempt{{ChannelID: "first", ModelOutput: "private attempt"}}}
+		l := AuditLog{ID: id, Kind: "production", Model: "model-a", ChannelID: "final", ModelOutputStored: true, ModelOutput: "private output", Attempts: []AuditAttempt{{ChannelID: "first", ModelOutput: "private attempt"}}}
 		if i == 2 {
 			l.ErrorCode = "upstream_timeout"
 			l.Model = "model-b"

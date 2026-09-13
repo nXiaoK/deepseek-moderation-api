@@ -137,6 +137,8 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	c := createTestChannel(t, store, credentials[0].ID, "lifecycle", "deepseek-flash")
 	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
 	p.Config.StoreInput = true
+	storeOutput := true
+	p.Config.StoreModelOutput = &storeOutput
 	save := func(p Policy, want int) {
 		call("PUT", "/admin/policies/abuse-default/config", map[string]any{"expected_revision": p.Revision, "name": p.Name, "config": p.Config}, "", want)
 	}

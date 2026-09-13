@@ -26,6 +26,8 @@ func configureBillingPolicy(t *testing.T, store *Store, cacheTTL int) (Policy, C
 	c := createTestChannel(t, store, cred, "billing", "deepseek-flash")
 	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
 	p.Config.ResultCacheTTL = cacheTTL
+	storeOutput := true
+	p.Config.StoreModelOutput = &storeOutput
 	if err = store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
 		t.Fatal(err)
 	}

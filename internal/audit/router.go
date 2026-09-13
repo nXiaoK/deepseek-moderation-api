@@ -310,6 +310,8 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	}
 	response := Response{ID: id, Model: p.Alias, Usage: Usage{Reported: true}}
 	log := AuditLog{ID: id, Kind: kind, PolicyID: p.ID, ClientID: client, Threshold: p.Config.Threshold, InputStored: p.Config.StoreInput, CreatedAt: start.UTC(), Attempts: []AuditAttempt{}}
+	log.ModelOutputStored = p.Config.retainModelOutput()
+	log.ModelOutputRetentionDays = p.Config.ModelOutputRetentionDays
 	if a != nil {
 		log.Request = a.log.Request
 	} else if kind == "test" {

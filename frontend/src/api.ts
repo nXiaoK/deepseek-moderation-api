@@ -6,6 +6,8 @@ export interface ChannelBinding {
   enabled: boolean;
 }
 export interface Config {
+  store_model_output?: boolean;
+  model_output_retention_days?: number;
   result_cache_ttl_seconds: number;
   prompt: string;
   threshold: number;
@@ -108,6 +110,7 @@ export interface AuditResponse {
   }[];
 }
 export interface AuditLog {
+  model_output_stored?: boolean;
   request?: {
     method: string;
     path: string;

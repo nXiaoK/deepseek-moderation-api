@@ -77,20 +77,29 @@ type ChannelBinding struct {
 	Enabled   bool   `json:"enabled"`
 }
 type PolicySettings struct {
-	Prompt         string           `json:"prompt"`
-	Threshold      float64          `json:"threshold"`
-	ResultCacheTTL int              `json:"result_cache_ttl_seconds"`
-	StoreInput     bool             `json:"store_input"`
-	RetentionDays  int              `json:"retention_days"`
-	TotalTimeoutMS int              `json:"total_timeout_ms"`
-	MaxAttempts    int              `json:"max_attempts"`
-	Channels       []ChannelBinding `json:"channels"`
+	StoreModelOutput         *bool            `json:"store_model_output,omitempty"`
+	ModelOutputRetentionDays int              `json:"model_output_retention_days,omitempty"`
+	Prompt                   string           `json:"prompt"`
+	Threshold                float64          `json:"threshold"`
+	ResultCacheTTL           int              `json:"result_cache_ttl_seconds"`
+	StoreInput               bool             `json:"store_input"`
+	RetentionDays            int              `json:"retention_days"`
+	TotalTimeoutMS           int              `json:"total_timeout_ms"`
+	MaxAttempts              int              `json:"max_attempts"`
+	Channels                 []ChannelBinding `json:"channels"`
 }
 
 func DefaultSettings() PolicySettings {
-	return PolicySettings{Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, Channels: []ChannelBinding{}}
+	storeOutput := false
+	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, Channels: []ChannelBinding{}}
+}
+func (c PolicySettings) retainModelOutput() bool {
+	return c.StoreModelOutput == nil || *c.StoreModelOutput
 }
 func (c PolicySettings) Validate() error {
+	if c.ModelOutputRetentionDays < 0 || c.ModelOutputRetentionDays > 365 {
+		return errors.New("模型输出保留时间必须为 1～365 天")
+	}
 	if c.Channels == nil {
 		return errors.New("channels 必须为数组，可为空数组")
 	}
@@ -222,31 +231,33 @@ type Response struct {
 	LatencyMS    int64          `json:"latency_ms"`
 }
 type AuditLog struct {
-	Request           *AuditRequest  `json:"request,omitempty"`
-	ErrorMessage      string         `json:"error_message,omitempty"`
-	ChannelID         string         `json:"channel_id"`
-	Attempts          []AuditAttempt `json:"attempts"`
-	AttemptCount      int            `json:"attempt_count"`
-	Provider          string         `json:"provider"`
-	UpstreamRequestID string         `json:"upstream_request_id,omitempty"`
-	CacheHit          bool           `json:"cache_hit"`
-	Cost              *CostView      `json:"cost,omitempty"`
-	ID                string         `json:"id"`
-	Kind              string         `json:"kind"`
-	PolicyID          string         `json:"policy_id"`
-	ClientID          string         `json:"client_id"`
-	Model             string         `json:"model"`
-	Flagged           bool           `json:"flagged"`
-	Confidence        *float64       `json:"confidence"`
-	Threshold         float64        `json:"threshold"`
-	Reason            string         `json:"reason"`
-	ModelOutput       string         `json:"model_output,omitempty"`
-	ErrorCode         string         `json:"error_code"`
-	LatencyMS         int64          `json:"latency_ms"`
-	Usage             Usage          `json:"usage"`
-	InputStored       bool           `json:"input_stored"`
-	Input             string         `json:"input,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
+	ModelOutputStored        bool           `json:"model_output_stored"`
+	ModelOutputRetentionDays int            `json:"-"`
+	Request                  *AuditRequest  `json:"request,omitempty"`
+	ErrorMessage             string         `json:"error_message,omitempty"`
+	ChannelID                string         `json:"channel_id"`
+	Attempts                 []AuditAttempt `json:"attempts"`
+	AttemptCount             int            `json:"attempt_count"`
+	Provider                 string         `json:"provider"`
+	UpstreamRequestID        string         `json:"upstream_request_id,omitempty"`
+	CacheHit                 bool           `json:"cache_hit"`
+	Cost                     *CostView      `json:"cost,omitempty"`
+	ID                       string         `json:"id"`
+	Kind                     string         `json:"kind"`
+	PolicyID                 string         `json:"policy_id"`
+	ClientID                 string         `json:"client_id"`
+	Model                    string         `json:"model"`
+	Flagged                  bool           `json:"flagged"`
+	Confidence               *float64       `json:"confidence"`
+	Threshold                float64        `json:"threshold"`
+	Reason                   string         `json:"reason"`
+	ModelOutput              string         `json:"model_output,omitempty"`
+	ErrorCode                string         `json:"error_code"`
+	LatencyMS                int64          `json:"latency_ms"`
+	Usage                    Usage          `json:"usage"`
+	InputStored              bool           `json:"input_stored"`
+	Input                    string         `json:"input,omitempty"`
+	CreatedAt                time.Time      `json:"created_at"`
 }
 type LogFilter struct {
 	Page, PageSize                             int
