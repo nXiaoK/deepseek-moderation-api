@@ -1,0 +1,61 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: audit
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U audit -d audit"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      AUDIT_TEST_DATABASE_URL: postgres://audit:test-password@127.0.0.1:5432/audit?sslmode=disable
+      AUDIT_TEST_PG_CONTAINER: ${{ job.services.postgres.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Unit, PostgreSQL, race and restore checks
+        run: go test -race ./... -count=1
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend format:check
+      - run: pnpm --dir frontend build
+      - run: pnpm --dir frontend exec playwright install --with-deps chromium
+      - run: pnpm --dir frontend test:ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-checks
+          path: frontend/test-results/
+          retention-days: 14

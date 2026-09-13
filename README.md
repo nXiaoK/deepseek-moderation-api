@@ -181,6 +181,18 @@ pnpm --dir frontend test:ui
 
 浏览器测试在独立的 5185 端口启动 Vite，并使用测试接口数据，不向真实模型发起请求，也不写入实际业务数据。覆盖桌面、平板和手机布局，图表绘制、筛选、下载、自定义时间范围以及空数据和失败重试。截图和失败追踪保存在 `frontend/test-results/`。
 
+GitHub CI 固定运行 Go 格式、完整 PostgreSQL 集成与竞态检查、前端格式/构建及 Playwright，并保留浏览器检查产物。迁移由版本与校验值校验，不能修改已经执行的迁移文件。
+
+可在本机开发数据库执行实际备份恢复演练：
+
+```sh
+AUDIT_TEST_DATABASE_URL='postgres://audit@127.0.0.1:55439/audit?sslmode=disable' \
+AUDIT_TEST_PG_CONTAINER=deepseek-audit-dev-db \
+go test ./internal/audit -run TestBackupRestoreRoundTrip -count=1
+```
+
+该测试只备份随机测试 schema，在同一本机 PostgreSQL 实例创建独立的临时数据库还原，再验证加密凭据、访问密钥摘要和加密审核输入/输出，结束后清理临时数据库。它不会备份或还原真实业务表，也不能代替生产备份的定期恢复验证；不要把测试连接指向生产。
+
 数据库测试创建并清理独立的随机 schema，覆盖登录/CSRF、密钥加密、原提示词传输、未保存试跑隔离、保存即生效、优先级加权分流、失败切换、并发更新、阈值边界、模型无效输出和审计记录。测试中的模型 HTTP 响应由本地受控替身提供，不会向 DeepSeek 发送真实用户数据或产生模型调用费用。
 
 ## 成本统计与预算
