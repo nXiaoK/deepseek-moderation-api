@@ -62,6 +62,7 @@ func (c PolicyConfig) Validate() error {
 // Policy stores only the current settings. Revision is an optimistic lock and
 // the policy_version included in our optional audit metadata.
 type Policy struct {
+	Archived  bool           `json:"archived"`
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Alias     string         `json:"alias"`

@@ -708,6 +708,19 @@ main {
 .credential-row p {
   margin: 5px 0 0;
 }
+.action-details {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.action-details summary {
+  cursor: pointer;
+}
+.action-details pre {
+  max-height: 200px;
+  overflow: auto;
+  margin-top: 8px;
+}
 .record-row strong + .badge,
 .credential-row .badge {
   margin-left: 10px;

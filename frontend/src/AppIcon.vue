@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Activity,
+  Archive,
   ArrowDownToLine,
   ArrowLeft,
   ArrowRight,
@@ -42,6 +43,7 @@ import {
 } from "@lucide/vue";
 const icons = {
   activity: Activity,
+  archive: Archive,
   download: ArrowDownToLine,
   back: ArrowLeft,
   next: ArrowRight,

@@ -67,6 +67,9 @@ func (s *Store) RouteSnapshot(ctx context.Context, id string, preview *PolicySet
 	if err != nil {
 		return p, nil, err
 	}
+	if p.Archived {
+		return p, nil, problem(409, "policy_archived", "策略已归档，请先恢复")
+	}
 	if preview != nil {
 		p.Config = *preview
 	}
@@ -115,7 +118,7 @@ func (s *Store) Channels(ctx context.Context) ([]ModelChannel, error) {
 		return nil, err
 	}
 	rows.Close()
-	policies, err := s.Policies(ctx)
+	policies, err := s.PoliciesIncludingArchived(ctx, true)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +127,11 @@ func (s *Store) Channels(ctx context.Context) ([]ModelChannel, error) {
 		for _, p := range policies {
 			for _, b := range p.Config.Channels {
 				if b.ChannelID == items[i].ID {
-					items[i].PolicyNames = append(items[i].PolicyNames, p.Name)
+					name := p.Name
+					if p.Archived {
+						name += "（已归档）"
+					}
+					items[i].PolicyNames = append(items[i].PolicyNames, name)
 				}
 			}
 		}

@@ -28,6 +28,7 @@ export interface Config {
   channels: ChannelBinding[];
 }
 export interface Policy {
+  archived?: boolean;
   id: string;
   name: string;
   alias: string;

@@ -80,13 +80,15 @@ func (s *Store) Bootstrap(ctx context.Context, username, password string) error 
 			return err
 		}
 	}
-	raw, _ := json.Marshal(DefaultSettings())
-	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_policies(id,name,alias,config) VALUES('abuse-default','网络滥用与人身伤害审核','abuse-audit-v1',$1) ON CONFLICT DO NOTHING`, string(raw)); err != nil {
-		return err
+	if count == 0 {
+		raw, _ := json.Marshal(DefaultSettings())
+		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_policies(id,name,alias,config) VALUES('abuse-default','网络滥用与人身伤害审核','abuse-audit-v1',$1) ON CONFLICT DO NOTHING`, string(raw)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
-func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*sql.Tx) error) error {
+func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*sql.Tx) error, details ...any) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -107,7 +109,14 @@ func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*s
 	if err = fn(tx); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO admin_action_logs(username,action,resource_id) VALUES($1,$2,$3)", actor, action, id); err != nil {
+	raw := []byte("{}")
+	if len(details) > 0 {
+		raw, err = json.Marshal(details[0])
+		if err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO admin_action_logs(username,action,resource_id,details) VALUES($1,$2,$3,$4)", actor, action, id, string(raw)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -118,7 +127,7 @@ type scanner interface{ Scan(...any) error }
 func scanPolicy(row scanner) (Policy, error) {
 	var p Policy
 	var raw []byte
-	err := row.Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.Revision, &raw, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.Revision, &raw, &p.UpdatedAt, &p.Archived)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -136,10 +145,13 @@ func scanPolicy(row scanner) (Policy, error) {
 	return p, err
 }
 
-const policyColumns = "id,name,alias,enabled,revision,config,updated_at"
+const policyColumns = "id,name,alias,enabled,revision,config,updated_at,archived"
 
 func (s *Store) Policies(ctx context.Context) ([]Policy, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT "+policyColumns+" FROM audit_policies ORDER BY name,id")
+	return s.PoliciesIncludingArchived(ctx, false)
+}
+func (s *Store) PoliciesIncludingArchived(ctx context.Context, include bool) ([]Policy, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE ($1 OR NOT archived) ORDER BY name,id", include)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +170,7 @@ func (s *Store) Policy(ctx context.Context, id string) (Policy, error) {
 	return scanPolicy(s.DB.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE id=$1", id))
 }
 func (s *Store) PolicyByAlias(ctx context.Context, alias string) (Policy, error) {
-	return scanPolicy(s.DB.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE alias=$1", alias))
+	return scanPolicy(s.DB.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE alias=$1 AND NOT archived", alias))
 }
 func (s *Store) CreatePolicy(ctx context.Context, actor, name, alias, source string) (Policy, error) {
 	cfg := DefaultSettings()
@@ -195,10 +207,26 @@ func (s *Store) SaveConfig(ctx context.Context, actor, id, name string, revision
 		return problem(400, "invalid_config", err.Error())
 	}
 	raw, _ := json.Marshal(cfg)
+	details := map[string]any{}
 	return s.mutate(ctx, actor, "policy.save", id, func(tx *sql.Tx) error {
-		var enabled bool
-		if err := tx.QueryRowContext(ctx, "SELECT enabled FROM audit_policies WHERE id=$1 FOR UPDATE", id).Scan(&enabled); err != nil {
+		var enabled, archived bool
+		var oldRaw []byte
+		var oldName string
+		if err := tx.QueryRowContext(ctx, "SELECT enabled,archived,config,name FROM audit_policies WHERE id=$1 FOR UPDATE", id).Scan(&enabled, &archived, &oldRaw, &oldName); err != nil {
 			return err
+		}
+		if archived {
+			return problem(409, "policy_archived", "策略已归档，请先恢复")
+		}
+		var before PolicySettings
+		if err := json.Unmarshal(oldRaw, &before); err != nil {
+			return err
+		}
+		for key, value := range policyChangeSummary(before, cfg) {
+			details[key] = value
+		}
+		if oldName != name {
+			details["name"] = map[string]string{"before": oldName, "after": name}
 		}
 		if err := validateBindings(ctx, tx, cfg, enabled); err != nil {
 			return err
@@ -212,7 +240,7 @@ func (s *Store) SaveConfig(ctx context.Context, actor, id, name string, revision
 			return ErrConflict
 		}
 		return nil
-	})
+	}, details)
 }
 func (s *Store) SetPolicyState(ctx context.Context, actor, id string, revision int64, enabled bool) error {
 	return s.mutate(ctx, actor, "policy.state", id, func(tx *sql.Tx) error {
@@ -222,6 +250,9 @@ func (s *Store) SetPolicyState(ctx context.Context, actor, id string, revision i
 		}
 		if p.Revision != revision {
 			return ErrConflict
+		}
+		if p.Archived {
+			return problem(409, "policy_archived", "策略已归档，请先恢复")
 		}
 		if enabled {
 			if err := validateBindings(ctx, tx, p.Config, true); err != nil {

@@ -158,6 +158,18 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 		if _, err := tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(846274906)"); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(846274903)"); err != nil {
+			return err
+		}
+		var archived bool
+		if err := tx.QueryRowContext(r.Context(), "SELECT archived FROM audit_policies WHERE id=$1", p.ID).Scan(&archived); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if archived {
+			return problem(409, "policy_archived", "策略已归档，请先恢复")
+		}
 		var running bool
 		if err := tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM evaluation_runs WHERE status IN ('queued','running'))").Scan(&running); err != nil {
 			return err

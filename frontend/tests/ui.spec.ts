@@ -847,6 +847,92 @@ test("access keys support editing expiry and identity-preserving rotation", asyn
   );
 });
 
+test("policies can be archived restored and imported as disabled", async ({
+  page,
+}) => {
+  const policy = {
+    id: "policy-1",
+    name: "默认内容审核",
+    alias: "abuse-audit-v1",
+    enabled: true,
+    archived: false,
+    revision: 1,
+    updated_at: "2026-09-14T00:00:00Z",
+    config,
+  };
+  let imported: typeof policy | undefined;
+  await page.route("**/admin/policies?*", (route) =>
+    route.fulfill({ json: imported ? [policy, imported] : [policy] }),
+  );
+  await page.route("**/admin/policies/policy-1", (route) =>
+    route.fulfill({ json: policy }),
+  );
+  await page.route("**/admin/policies/policy-1/archive", (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.expected_revision).toBe(policy.revision);
+    policy.archived = body.archived;
+    policy.enabled = false;
+    policy.revision++;
+    return route.fulfill({ json: policy });
+  });
+  await page.route("**/admin/policies/import", (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.config.channels).toEqual([]);
+    imported = {
+      ...policy,
+      id: "imported",
+      name: body.name,
+      alias: body.alias,
+      archived: false,
+      enabled: false,
+      revision: 1,
+      config: body.config,
+    };
+    return route.fulfill({ status: 201, json: imported });
+  });
+  await page.route("**/admin/policies/imported", (route) =>
+    route.fulfill({ json: imported }),
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "归档当前策略", exact: true }),
+  ).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "归档当前策略", exact: true }).click();
+  await expect(page.locator(".archived-policies")).toContainText(
+    "默认内容审核",
+  );
+  await page.locator(".archived-policies summary").click();
+  await page.getByRole("button", { name: "恢复", exact: true }).click();
+  await expect(page.getByRole("switch")).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  const file = {
+    schema_version: 1,
+    name: "导出配置",
+    alias: "portable-policy",
+    config,
+  };
+  await page
+    .getByLabel("选择策略配置文件", { exact: true })
+    .setInputFiles({
+      name: "policy.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(file)),
+    });
+  const modal = page.getByRole("dialog", { name: "导入策略配置", exact: true });
+  await modal.getByLabel("策略名称", { exact: true }).fill("导入结果");
+  await modal.getByLabel("模型别名", { exact: true }).fill("imported-policy");
+  await modal.getByRole("button", { name: "导入策略", exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  await expect(page.locator(".policy-picker select")).toHaveValue("imported");
+  await expect(page.getByRole("switch")).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+});
+
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {
   await page.route("**/admin/session", (route) =>
     route.fulfill({ status: 401, json: { error: { message: "请先登录" } } }),

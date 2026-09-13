@@ -511,7 +511,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		used[c.channel.ID] = true
 		// Recheck administrative stops before every attempt, including a fallback.
 		var active bool
-		e = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND ($3 OR p.enabled) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$4`, c.channel.ID, p.ID, kind == "test", c.channel.Revision).Scan(&active)
+		e = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND NOT p.archived AND ($3 OR p.enabled) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$4`, c.channel.ID, p.ID, kind == "test", c.channel.Revision).Scan(&active)
 		if errors.Is(e, sql.ErrNoRows) || e == nil && !active {
 			release(nil, false)
 			continue

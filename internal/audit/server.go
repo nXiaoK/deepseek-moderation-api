@@ -100,6 +100,10 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /admin/auth/password", s.changePassword)
 	admin("GET /admin/policies", s.listPolicies)
 	admin("POST /admin/policies", s.createPolicy)
+	admin("POST /admin/policies/import", s.importPolicy)
+	admin("GET /admin/policies/{id}/export", s.exportPolicy)
+	admin("PUT /admin/policies/{id}/archive", s.archivePolicy)
+	admin("DELETE /admin/policies/{id}", s.deletePolicy)
 	admin("GET /admin/policies/{id}", s.getPolicy)
 	admin("PUT /admin/policies/{id}/config", s.saveConfig)
 	admin("PUT /admin/policies/{id}/state", s.policyState)
@@ -317,7 +321,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, 200, map[string]bool{"ok": true})
 }
 func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request) error {
-	items, err := s.Store.Policies(r.Context())
+	items, err := s.Store.PoliciesIncludingArchived(r.Context(), r.URL.Query().Get("include_archived") == "1")
 	if err != nil {
 		return err
 	}
@@ -605,7 +609,11 @@ func (s *Server) logDetail(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, 200, item)
 }
 func (s *Server) actions(w http.ResponseWriter, r *http.Request) error {
-	rows, err := s.Store.DB.QueryContext(r.Context(), "SELECT username,action,resource_id,created_at FROM admin_action_logs ORDER BY id DESC LIMIT 100")
+	q := r.URL.Query()
+	if len(q.Get("action")) > 200 || len(q.Get("resource_id")) > 200 {
+		return problem(400, "invalid_filter", "筛选值过长")
+	}
+	rows, err := s.Store.DB.QueryContext(r.Context(), "SELECT username,action,resource_id,created_at,details FROM admin_action_logs WHERE ($1='' OR action=$1) AND ($2='' OR resource_id=$2) ORDER BY id DESC LIMIT 100", q.Get("action"), q.Get("resource_id"))
 	if err != nil {
 		return err
 	}
@@ -614,10 +622,15 @@ func (s *Server) actions(w http.ResponseWriter, r *http.Request) error {
 	for rows.Next() {
 		var user, action, id string
 		var at time.Time
-		if err = rows.Scan(&user, &action, &id, &at); err != nil {
+		var raw []byte
+		var details map[string]any
+		if err = rows.Scan(&user, &action, &id, &at, &raw); err != nil {
 			return err
 		}
-		items = append(items, map[string]any{"username": user, "action": action, "resource_id": id, "created_at": at})
+		if err := json.Unmarshal(raw, &details); err != nil {
+			return err
+		}
+		items = append(items, map[string]any{"username": user, "action": action, "resource_id": id, "created_at": at, "details": details})
 	}
 	if err = rows.Err(); err != nil {
 		return err

@@ -10,6 +10,7 @@ import {
 import AppIcon from "./AppIcon.vue";
 import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
+import PolicyTools from "./PolicyTools.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
 import {
@@ -88,6 +89,11 @@ const policies = ref<Policy[]>([]),
   config = ref<Config | null>(null),
   policyName = ref(""),
   baseline = ref("");
+const archivedPolicies = ref<Policy[]>([]);
+const allPolicies = computed(() => [
+  ...policies.value,
+  ...archivedPolicies.value,
+]);
 const credentials = ref<Credential[]>([]),
   keys = ref<ClientKey[]>([]),
   channels = ref<ModelChannel[]>([]);
@@ -98,8 +104,42 @@ const overview = ref<Record<string, number>>({}),
       action: string;
       resource_id: string;
       created_at: string;
+      details?: Record<string, unknown>;
     }[]
   >([]);
+const actionFilter = ref(""),
+  actionResource = ref("");
+const actionLabels: Record<string, string> = {
+  "policy.save": "保存策略",
+  "policy.create": "创建策略",
+  "policy.state": "启停策略",
+  "policy.archive": "归档策略",
+  "policy.delete": "删除策略",
+  "policy.import": "导入策略",
+  "credential.update": "更新连接密钥",
+  "credential.delete": "删除连接密钥",
+  "channel.save": "保存模型通道",
+  "channel.delete": "删除模型通道",
+  "key.create": "创建访问密钥",
+  "key.update": "编辑访问密钥",
+  "key.rotate": "轮换访问密钥",
+  "key.revoke": "停用访问密钥",
+  "key.delete": "删除访问密钥",
+  "budget.update": "修改预算",
+  "price.publish": "更新价格",
+  "price.reset": "取消价格覆盖",
+  "cost.reconcile": "核对费用",
+  "evaluation.start": "开始评测",
+  "evaluation.cancel": "取消评测",
+  "admin.password": "修改管理员密码",
+};
+async function loadActions() {
+  const q = new URLSearchParams({
+    action: actionFilter.value,
+    resource_id: actionResource.value,
+  });
+  actions.value = await api("/admin/actions?" + q);
+}
 const creating = ref(false),
   newName = ref(""),
   newAlias = ref(""),
@@ -208,7 +248,7 @@ const showStandaloneOutput = computed(() => {
   );
 });
 const policyLabel = (id: string) =>
-  policies.value.find((p) => p.id === id)?.name || id;
+  allPolicies.value.find((p) => p.id === id)?.name || id;
 const clientLabel = (id: string) =>
   keys.value.find((k) => k.id === id)?.name || id;
 const message = (e: unknown) => (e instanceof Error ? e.message : "操作失败");
@@ -241,18 +281,48 @@ async function loadPolicy(id: string) {
 }
 async function refresh() {
   const [ps, cs, ks, chs] = await Promise.all([
-    api<Policy[]>("/admin/policies"),
+    api<Policy[]>("/admin/policies?include_archived=1"),
     api<Credential[]>("/admin/credentials"),
     api<ClientKey[]>("/admin/api-keys"),
     api<ModelChannel[]>("/admin/model-channels"),
   ]);
-  policies.value = ps;
+  policies.value = ps.filter((p) => !p.archived);
+  archivedPolicies.value = ps.filter((p) => p.archived);
   credentials.value = cs;
   keys.value = ks;
   channels.value = chs;
-  if (!selected.value && ps[0]) {
-    await loadPolicy(ps[0].id);
-    keyPolicies.value = [ps[0].id];
+  if (!selected.value && policies.value[0]) {
+    await loadPolicy(policies.value[0].id);
+    keyPolicies.value = [policies.value[0].id];
+  }
+}
+async function reloadPolicies(id?: string) {
+  const all = await api<Policy[]>("/admin/policies?include_archived=1");
+  policies.value = all.filter((p) => !p.archived);
+  archivedPolicies.value = all.filter((p) => p.archived);
+  keyPolicies.value = keyPolicies.value.filter((id) =>
+    policies.value.some((p) => p.id === id),
+  );
+  if (id) await loadPolicy(id);
+  else if (
+    (selected.value &&
+      !policies.value.some((p) => p.id === selected.value?.id)) ||
+    !selected.value
+  ) {
+    if (policies.value[0]) await loadPolicy(policies.value[0].id);
+    else {
+      selected.value = null;
+      config.value = null;
+      baseline.value = "";
+      policyName.value = "";
+    }
+  }
+}
+function policyToolBusy(value: boolean) {
+  busy.value = value;
+  if (value) {
+    error.value = "";
+    notice.value = "";
   }
 }
 async function login() {
@@ -302,7 +372,7 @@ async function navigate(target: string) {
     if (target === "credentials")
       credentials.value = await api("/admin/credentials");
     if (target === "keys") keys.value = await api("/admin/api-keys");
-    if (target === "settings") actions.value = await api("/admin/actions");
+    if (target === "settings") await loadActions();
   });
 }
 async function save() {
@@ -729,6 +799,21 @@ window.addEventListener("beforeunload", (e) => {
           </button>
         </div>
 
+        <PolicyTools
+          v-if="page === 'policies'"
+          :selected="selected"
+          :archived="archivedPolicies"
+          :dirty="dirty"
+          :busy="busy"
+          :reload="reloadPolicies"
+          @busy="policyToolBusy"
+          @error="error = $event"
+          @notice="notice = $event"
+          @unauthorized="
+            user = '';
+            setCSRF('');
+          "
+        />
         <template v-if="page === 'policies' && selected && config">
           <div class="policy-bar">
             <label class="policy-picker"
@@ -814,7 +899,7 @@ window.addEventListener("beforeunload", (e) => {
         />
         <AnalyticsPanel
           v-if="page === 'analytics'"
-          :policies="policies"
+          :policies="allPolicies"
           :clients="keys"
           :channels="channels"
           @logs="inspectAnalyticsLogs"
@@ -1214,8 +1299,8 @@ window.addEventListener("beforeunload", (e) => {
               ><label
                 >策略<select v-model="logPolicy">
                   <option value="">全部策略</option>
-                  <option v-for="p in policies" :key="p.id" :value="p.id">
-                    {{ p.name }}
+                  <option v-for="p in allPolicies" :key="p.id" :value="p.id">
+                    {{ p.name }}{{ p.archived ? "（已归档）" : "" }}
                   </option>
                 </select></label
               ><label
@@ -1376,12 +1461,45 @@ window.addEventListener("beforeunload", (e) => {
               <h2>管理操作记录</h2>
               <span class="muted small">最近 100 条</span>
             </div>
+            <form class="log-filters" @submit.prevent="run(loadActions)">
+              <label
+                >操作类型<select v-model="actionFilter">
+                  <option value="">全部操作</option>
+                  <option
+                    v-for="(label, value) in actionLabels"
+                    :key="value"
+                    :value="value"
+                  >
+                    {{ label }}
+                  </option>
+                </select></label
+              ><label
+                >资源 ID<input
+                  v-model="actionResource"
+                  maxlength="200" /></label
+              ><button :disabled="busy">
+                <AppIcon name="filters" :size="16" />筛选操作
+              </button>
+            </form>
             <div v-for="(a, i) in actions" :key="i" class="record-row">
               <div>
-                <strong>{{ a.action }}</strong>
+                <strong>{{
+                  a.action === "policy.archive" && a.details?.archived === false
+                    ? "恢复策略"
+                    : actionLabels[a.action] || a.action
+                }}</strong>
                 <p class="muted small">
                   {{ a.username }} · {{ a.resource_id }}
                 </p>
+                <details
+                  v-if="Object.keys(a.details || {}).length"
+                  class="action-details"
+                >
+                  <summary>变更摘要</summary>
+                  <pre class="input-detail">{{
+                    JSON.stringify(a.details, null, 2)
+                  }}</pre>
+                </details>
               </div>
               <time class="muted small">{{ time(a.created_at) }}</time>
             </div>
@@ -1431,12 +1549,13 @@ window.addEventListener("beforeunload", (e) => {
         >
         <fieldset>
           <legend>允许调用的策略</legend>
-          <label v-for="p in policies" :key="p.id" class="check-row"
+          <label v-for="p in allPolicies" :key="p.id" class="check-row"
             ><input
               v-model="keyEditor.policy_ids"
               type="checkbox"
               :value="p.id"
-            />{{ p.name }}</label
+              :disabled="p.archived && !keyEditor.policy_ids.includes(p.id)"
+            />{{ p.name }}{{ p.archived ? "（已归档）" : "" }}</label
           >
         </fieldset>
         <p v-if="error" class="error">{{ error }}</p>
