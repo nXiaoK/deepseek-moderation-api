@@ -35,6 +35,7 @@ export interface ModelChannel {
   timeout_ms: number;
   max_tokens: number;
   max_concurrency: number;
+  text_only: boolean;
   enabled: boolean;
   revision: number;
   policy_names: string[];
@@ -47,6 +48,8 @@ export interface ModelChannel {
   };
 }
 export interface AuditAttempt {
+  input_scope?: string;
+  image_count?: number;
   error_message?: string;
   model_output?: string;
   id: string;
@@ -115,6 +118,7 @@ export interface AuditLog {
     text_chars: number;
     image_count: number;
     text_only_fallback?: boolean;
+    input_scope?: string;
   };
   error_message?: string;
   channel_id: string;

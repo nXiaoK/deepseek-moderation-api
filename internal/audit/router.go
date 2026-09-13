@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -238,7 +239,7 @@ func (s *Store) requestCost(ctx context.Context, id string) (*CostView, error) {
 	}
 	return v, nil
 }
-func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string) (Response, error) {
+func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, images ...AuditImage) (Response, error) {
 	id := randomToken("audit_")
 	start := time.Now()
 	a, _ := ctx.Value(requestAuditKey{}).(*requestAudit)
@@ -252,7 +253,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.Config.TotalTimeoutMS)*time.Millisecond)
 	defer cancel()
-	result, err := s.executeRoute(callCtx, p, channels, client, kind, input, onlyChannel, &response, &log)
+	result, err := s.executeRoute(callCtx, p, channels, client, kind, input, onlyChannel, &response, &log, images...)
 	if err != nil && callCtx.Err() != nil {
 		err = problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")
 	}
@@ -284,6 +285,8 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 		log.ErrorMessage = storedAuditError(err)
 	}
 	if a != nil {
+		log.Request.InputScope = response.InputScope
+		log.Request.TextOnlyFallback = response.InputScope == "text_only"
 		log.Request.HTTPStatus = auditHTTPStatus(err)
 		if err == nil {
 			log.Request.Stage = "completed"
@@ -325,7 +328,7 @@ func errorCode(err error) string {
 	}
 	return "internal_error"
 }
-func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, response *Response, log *AuditLog) (Assessment, error) {
+func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, response *Response, log *AuditLog, images ...AuditImage) (Assessment, error) {
 	if err := p.Config.Validate(); err != nil {
 		return Assessment{}, problem(400, "invalid_config", err.Error())
 	}
@@ -350,12 +353,20 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 	raw, _ := json.Marshal(p.Config)
 	candidates := []routeCandidate{}
 	excludedPrice := false
+	excludedEmpty := false
 	for _, c := range channels {
 		b, ok := bindings[c.ID]
 		if !ok || !b.Enabled || !c.Enabled || !c.CredentialActive || onlyChannel != "" && onlyChannel != c.ID {
 			continue
 		}
 		cfg := c.Inference(p.Config)
+		if c.TextOnly && len(images) > 0 && strings.TrimSpace(input) == "" {
+			excludedEmpty = true
+			continue
+		}
+		if !c.TextOnly {
+			cfg.ImageCount = len(images)
+		}
 		cfg.ConnectionRevision = digest(string(raw) + c.ID + c.CacheEpoch)
 		if err = cfg.Validate(); err != nil {
 			return Assessment{}, problem(400, "invalid_channel", err.Error())
@@ -365,7 +376,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			if e != nil {
 				return Assessment{}, e
 			}
-			if !cfg.officialPricing() || card == nil {
+			if !cfg.officialPricing() || card == nil || cfg.ImageCount > 0 {
 				excludedPrice = true
 				continue
 			}
@@ -382,7 +393,9 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 	used := map[string]bool{}
 	lastErr := problem(503, "no_available_channel", "当前没有可用的审核模型通道")
 	if len(candidates) == 0 && excludedPrice {
-		lastErr = problem(503, "pricing_unavailable", "预算设置下没有价格可估算的模型通道")
+		lastErr = problem(503, "pricing_unavailable", "预算设置下没有价格可估算的模型通道（图片用量暂不支持预估）")
+	} else if len(candidates) == 0 && excludedEmpty {
+		lastErr = problem(400, "empty_input", "文本模型跳过图片后没有可审核文本")
 	}
 	limit := p.Config.MaxAttempts
 	if onlyChannel != "" {
@@ -419,14 +432,19 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			}
 			continue
 		}
-		attempt := AuditAttempt{ID: randomToken("cost_"), ChannelID: c.channel.ID, ChannelName: c.channel.Name, Provider: c.channel.Provider, Model: c.channel.Model}
+		attemptImages := images
+		if c.channel.TextOnly {
+			attemptImages = nil
+		}
+		scope := auditInputScope(c.channel.TextOnly, images)
+		attempt := AuditAttempt{InputScope: scope, ImageCount: len(attemptImages), ID: randomToken("cost_"), ChannelID: c.channel.ID, ChannelName: c.channel.Name, Provider: c.channel.Provider, Model: c.channel.Model}
 		at := time.Now()
 		assessment := Assessment{}
 		cacheKey := ""
 		cached := false
 		cachedModel := ""
-		if kind == "production" && c.cfg.ResultCacheTTL > 0 {
-			cacheKey = s.Store.assessmentCacheKey(client, p, c.cfg, int(p.Revision), key, input)
+		if kind == "production" && c.cfg.ResultCacheTTL > 0 && imageInputCacheable(attemptImages) {
+			cacheKey = s.Store.assessmentCacheKey(client, p, c.cfg, int(p.Revision), key, input, attemptImages...)
 			value, cacheErr := s.Store.CachedAssessment(ctx, cacheKey)
 			if cacheErr != nil {
 				release(cacheErr, false)
@@ -446,7 +464,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		usage := Usage{Reported: true, ActualModel: cachedModel}
 		output := ""
 		if !cached {
-			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input)
+			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
 		}
 		if ctx.Err() != nil {
 			release(ctx.Err(), false)
@@ -454,6 +472,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			release(e, usage.Attempted)
 		}
 		response.ChannelID = c.channel.ID
+		response.InputScope = scope
 		response.Provider = c.channel.Provider
 		response.ActualModel = c.channel.Model
 		if usage.ActualModel != "" {

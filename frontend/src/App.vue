@@ -328,6 +328,22 @@ async function revokeKey(k: ClientKey) {
     notice.value = "访问密钥已停用。";
   });
 }
+async function deleteKey(k: ClientKey) {
+  if (
+    busy.value ||
+    !window.confirm(
+      `确定删除访问密钥“${k.name}”（${k.prefix}…）？删除后无法恢复，使用该密钥的新请求将无法通过认证。历史审核和费用记录会保留。`,
+    )
+  ) {
+    return;
+  }
+  await run(async () => {
+    await api(`/admin/api-keys/${k.id}`, "DELETE");
+    keys.value = keys.value.filter((key) => key.id !== k.id);
+    if (newToken.value.startsWith(k.prefix)) newToken.value = "";
+    notice.value = "访问密钥已删除，历史审核和费用记录已保留。";
+  });
+}
 async function copyToken() {
   try {
     await navigator.clipboard.writeText(newToken.value);
@@ -806,9 +822,12 @@ window.addEventListener("beforeunload", (e) => {
                     {{ k.policy_ids.map(policyLabel).join("、") }}
                   </p>
                 </div>
-                <button @click="revokeKey(k)" :disabled="busy || !k.active">
-                  {{ k.active ? "停用" : "已停用" }}
-                </button>
+                <div class="row">
+                  <button @click="revokeKey(k)" :disabled="busy || !k.active">
+                    {{ k.active ? "停用" : "已停用" }}
+                  </button>
+                  <button @click="deleteKey(k)" :disabled="busy">删除</button>
+                </div>
               </div>
             </section>
           </div>
@@ -1144,13 +1163,14 @@ window.addEventListener("beforeunload", (e) => {
       </template>
       <h3>审核输入</h3>
       <p v-if="detail.request?.text_only_fallback" class="hint">
-        请求体超过 1 MiB，图片已跳过，仅审核文本。审核结果不覆盖图片内容。
+        最终通道仅审核文本，图片已跳过。各次调用的审核范围见“调用过程”。
+      </p>
+      <p v-if="detail.request?.input_scope === 'text_and_images'" class="hint">
+        最终通道接收了文本和图片进行审核。
       </p>
       <p v-if="detail.request?.image_count" class="hint">
         请求包含
-        {{
-          detail.request.image_count
-        }}
+        {{ detail.request.image_count }}
         张图片。此处仅保留图片数量和按策略保存的文本，不保存图片内容或地址。
       </p>
       <p

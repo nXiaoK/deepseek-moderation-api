@@ -310,7 +310,7 @@ func (s *Store) CredentialSecret(ctx context.Context, id string) (string, error)
 	return s.Vault.Open(raw, "credential:"+id)
 }
 func (s *Store) Keys(ctx context.Context) ([]ClientKey, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,prefix,policy_ids,rpm,active,created_at FROM client_api_keys ORDER BY created_at DESC")
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,prefix,policy_ids,rpm,active,created_at FROM client_api_keys WHERE deleted_at IS NULL ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +350,7 @@ func (s *Store) CreateKey(ctx context.Context, actor, name string, ids []string,
 }
 func (s *Store) RevokeKey(ctx context.Context, actor, id string) error {
 	return s.mutate(ctx, actor, "key.revoke", id, func(tx *sql.Tx) error {
-		r, err := tx.ExecContext(ctx, "UPDATE client_api_keys SET active=FALSE WHERE id=$1", id)
+		r, err := tx.ExecContext(ctx, "UPDATE client_api_keys SET active=FALSE WHERE id=$1 AND deleted_at IS NULL", id)
 		if err != nil {
 			return err
 		}
@@ -364,7 +364,7 @@ func (s *Store) RevokeKey(ctx context.Context, actor, id string) error {
 func (s *Store) AuthenticateKey(ctx context.Context, token string) (ClientKey, error) {
 	var k ClientKey
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, "SELECT id,name,policy_ids,rpm FROM client_api_keys WHERE token_hash=$1 AND active=TRUE", digest(token)).Scan(&k.ID, &k.Name, &raw, &k.RPM)
+	err := s.DB.QueryRowContext(ctx, "SELECT id,name,policy_ids,rpm FROM client_api_keys WHERE token_hash=$1 AND active=TRUE AND deleted_at IS NULL", digest(token)).Scan(&k.ID, &k.Name, &raw, &k.RPM)
 	if errors.Is(err, sql.ErrNoRows) {
 		return k, problem(401, "invalid_api_key", "审核服务访问密钥无效")
 	}

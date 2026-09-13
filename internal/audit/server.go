@@ -90,6 +90,7 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/api-keys", s.keys)
 	admin("POST /admin/api-keys", s.createKey)
 	admin("POST /admin/api-keys/{id}/revoke", s.revokeKey)
+	admin("DELETE /admin/api-keys/{id}", s.deleteKey)
 	admin("GET /admin/audit-logs", s.logs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
 	admin("GET /admin/overview", func(w http.ResponseWriter, r *http.Request) error {
@@ -446,7 +447,7 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 		return problem(429, "rate_limited", "调用额度已达上限")
 	}
 	a.log.Request.Stage = "request_validation"
-	in, textOnlyFallback, err := readModerationRequest(w, r)
+	in, _, err := readModerationRequest(w, r)
 	if err != nil {
 		return err
 	}
@@ -460,32 +461,27 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	if !slices.Contains(k.PolicyIDs, p.ID) {
 		return problem(403, "policy_forbidden", "该密钥无权调用此策略")
 	}
-	a.log.PolicyID, a.log.Threshold = p.ID, p.Config.Threshold
-	a.log.InputStored, a.days = p.Config.StoreInput, p.Config.RetentionDays
-	a.log.Request.Stage = "input_validation"
-	if a.log.Request.ImageCount > 0 && !textOnlyFallback {
-		return problem(400, "unsupported_input", "当前策略只支持文本审核，请求包含图片，尚未调用审核模型")
-	}
-	text, err := parseModerationText(in.Input, textOnlyFallback)
-	if err != nil {
-		return err
-	}
-	a.input = text
-	a.log.Request.TextOnlyFallback = textOnlyFallback
-	if textOnlyFallback {
-		w.Header().Set("X-Audit-Input-Scope", "text-only")
-	}
-	a.log.Request.Stage = "policy_check"
 	p, channels, err := s.Store.RouteSnapshot(r.Context(), p.ID, nil)
 	if err != nil {
 		return err
 	}
+	a.log.PolicyID, a.log.Threshold = p.ID, p.Config.Threshold
+	a.log.InputStored, a.days = p.Config.StoreInput, p.Config.RetentionDays
 	if !p.Enabled {
 		return problem(503, "policy_unavailable", "审核策略已停用")
 	}
+	a.log.Request.Stage = "input_validation"
+	text, images, err := parseModerationInput(in.Input)
+	if err != nil {
+		return err
+	}
+	a.input = text
 	a.log.Request.Stage = "audit"
-	res, err := s.runAudit(r.Context(), p, channels, k.ID, "production", text, "")
+	res, err := s.runAudit(r.Context(), p, channels, k.ID, "production", text, "", images...)
 	w.Header().Set("X-Audit-Request-ID", res.ID)
+	if res.InputScope != "" {
+		w.Header().Set("X-Audit-Input-Scope", strings.ReplaceAll(res.InputScope, "_", "-"))
+	}
 	if err != nil {
 		return err
 	}

@@ -66,7 +66,11 @@ export function auditInput(log: AuditLog): string {
         unsupported: "不支持的输入类型",
       } as Record<string, string>
     )[request.input_type] || request.input_type;
-  const scope = request.text_only_fallback ? " · 图片已跳过，仅审核文本" : "";
+  const scope = request.text_only_fallback
+    ? " · 最终通道仅审核文本"
+    : request.input_scope === "text_and_images"
+      ? " · 最终通道审核文本及图片"
+      : "";
   return `${label} · ${request.text_chars} 字 · ${request.image_count} 张图片${scope}`;
 }
 export function auditError(code: string, message?: string): string {

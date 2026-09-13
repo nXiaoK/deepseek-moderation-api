@@ -14,6 +14,7 @@ const empty = () => ({
   timeout_ms: 4000,
   max_tokens: 512,
   max_concurrency: 8,
+  text_only: false,
   enabled: true,
   expected_revision: 0,
 });
@@ -46,6 +47,7 @@ function edit(c: ModelChannel) {
     timeout_ms: c.timeout_ms,
     max_tokens: c.max_tokens,
     max_concurrency: c.max_concurrency,
+    text_only: c.text_only,
     enabled: c.enabled,
     expected_revision: c.revision,
   };
@@ -129,6 +131,7 @@ async function remove(c: ModelChannel) {
                 >{{ c.model }} ·
                 {{ c.provider === "deepseek" ? "DeepSeek" : "Grok" }}</small
               >
+              <small v-if="c.text_only">文本模型 · 自动忽略图片</small>
             </td>
             <td>{{ health(c) }}</td>
             <td>{{ c.health.in_flight }} / {{ c.max_concurrency }}</td>
@@ -229,6 +232,17 @@ async function remove(c: ModelChannel) {
           ><br />Grok 使用 sub2api 标准 Responses
           API。当前费用无法可靠预估，设置人民币预算的调用方不会选用此通道。</template
         >
+      </p>
+      <label class="check-row">
+        <input v-model="form.text_only" type="checkbox" :disabled="busy" />
+        <span>此模型为文本模型</span>
+      </label>
+      <p class="hint">
+        勾选后自动忽略图片，只审核文本；没有文本时不会调用此通道。未勾选时，将文本和图片一起发送给模型，请使用支持图片的模型。含图请求体最多
+        32 MiB。
+      </p>
+      <p v-if="!form.text_only" class="hint">
+        图片费用暂不支持预估，设置了日/月预算的访问密钥暂不能使用此通道审核图片。
       </p>
       <label class="check-row"
         ><input v-model="form.enabled" type="checkbox" :disabled="busy" /><span

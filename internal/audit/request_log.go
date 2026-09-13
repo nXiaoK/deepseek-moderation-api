@@ -22,6 +22,7 @@ type AuditRequest struct {
 	TextChars        int    `json:"text_chars"`
 	ImageCount       int    `json:"image_count"`
 	TextOnlyFallback bool   `json:"text_only_fallback,omitempty"`
+	InputScope       string `json:"input_scope,omitempty"`
 }
 
 type requestAuditKey struct{}

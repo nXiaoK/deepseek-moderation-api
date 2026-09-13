@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestModerationOversizedImageTextFallback(t *testing.T) {
+func TestModerationImageTextExtraction(t *testing.T) {
 	// An 800 KiB file already exceeds 1 MiB when encoded for sub2api.
 	image := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 800*1024))
 	mixed := func(text, image string) string {
@@ -25,7 +25,8 @@ func TestModerationOversizedImageTextFallback(t *testing.T) {
 		wantFallback                   bool
 	}{
 		{"base64_800KiB", mixed("inspect screenshot", image), "inspect screenshot\n", "", true},
-		{"exact_limit", base + strings.Repeat(" ", moderationTextBodyLimit-len(base)), "", "invalid_input", false},
+		{"small_image_url", base, "inspect screenshot\n", "", true},
+		{"exact_limit", base + strings.Repeat(" ", moderationTextBodyLimit-len(base)), "inspect screenshot\n", "", true},
 		{"above_limit", base + strings.Repeat(" ", moderationTextBodyLimit-len(base)+1), "inspect screenshot\n", "", true},
 		{"empty_text", mixed(" ", image), "", "empty_input", true},
 		{"long_text", mixed(strings.Repeat("审", 64001), image), "", "input_too_large", true},

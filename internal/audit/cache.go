@@ -11,13 +11,14 @@ import (
 	"time"
 )
 
-func (s *Store) assessmentCacheKey(client string, p Policy, cfg PolicyConfig, version int, credential, text string) string {
+func (s *Store) assessmentCacheKey(client string, p Policy, cfg PolicyConfig, version int, credential, text string, images ...AuditImage) string {
 	raw, _ := json.Marshal(struct {
 		Client, Policy   string
 		Version          int
 		Config           PolicyConfig
 		Credential, Text string
-	}{client, p.ID, version, cfg, digest(credential), text})
+		Images           []AuditImage `json:",omitempty"`
+	}{client, p.ID, version, cfg, digest(credential), text, images})
 	h := hmac.New(sha256.New, s.Vault.hashKey)
 	_, _ = h.Write([]byte("audit-result-cache-v1\x00"))
 	_, _ = h.Write(raw)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,7 +34,13 @@ func upstreamCallError(err error, cfg PolicyConfig) error {
 	}
 	return problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 }
-func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string) (Assessment, Usage, string, error) {
+func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string, images ...AuditImage) (Assessment, Usage, string, error) {
+	if cfg.TextOnly {
+		images = nil
+	}
+	if strings.TrimSpace(input) == "" && len(images) == 0 {
+		return Assessment{}, Usage{}, "", problem(400, "empty_input", "没有可审核文本或图片")
+	}
 	if ctx.Err() != nil {
 		return Assessment{}, Usage{}, "", upstreamCallError(ctx.Err(), cfg)
 	}
@@ -49,9 +56,16 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	if cfg.ProviderID() == ProviderGrok {
-		return e.assessGrok(ctx, cfg, key, input)
+		return e.assessGrok(ctx, cfg, key, input, images...)
 	}
 	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "temperature": 0, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	if len(images) > 0 {
+		content := []map[string]any{{"type": "text", "text": "<user_input>" + input + "</user_input>"}}
+		for _, image := range images {
+			content = append(content, map[string]any{"type": "image_url", "image_url": image})
+		}
+		payload["messages"] = []map[string]any{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": content}}
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Assessment{}, Usage{}, "", err

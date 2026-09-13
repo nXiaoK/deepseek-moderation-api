@@ -225,7 +225,7 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	csrf = "wrong"
 	call("POST", "/admin/auth/logout", map[string]any{}, "", 403)
 	csrf = currentCSRF
-	call("POST", "/v1/moderations", map[string]any{"model": "abuse-audit-v1", "input": []any{map[string]any{"type": "image_url", "image_url": map[string]string{"url": "https://example.com/x"}}}}, token.Token, 400)
+	call("POST", "/v1/moderations", map[string]any{"model": "abuse-audit-v1", "input": []any{map[string]any{"type": "image_url", "image_url": map[string]string{"url": "file:///invalid-image"}}}}, token.Token, 400)
 	list, _ := store.Keys(context.Background())
 	call("POST", "/admin/api-keys/"+list[0].ID+"/revoke", map[string]any{}, "", 200)
 	call("POST", "/v1/moderations", request, token.Token, 401)

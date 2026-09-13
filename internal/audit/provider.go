@@ -97,7 +97,7 @@ type grokResponse struct {
 	Error json.RawMessage `json:"error"`
 }
 
-func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input string) (Assessment, Usage, string, error) {
+func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input string, images ...AuditImage) (Assessment, Usage, string, error) {
 	payload := map[string]any{
 		"model":             cfg.Model,
 		"stream":            true,
@@ -107,6 +107,17 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 		"input":             "<user_input>" + input + "</user_input>",
 		"text":              map[string]any{"format": map[string]string{"type": "json_object"}},
 		"reasoning":         map[string]string{"effort": "none"},
+	}
+	if len(images) > 0 {
+		content := []map[string]any{{"type": "input_text", "text": "<user_input>" + input + "</user_input>"}}
+		for _, image := range images {
+			part := map[string]any{"type": "input_image", "image_url": image.URL}
+			if image.Detail != "" {
+				part["detail"] = image.Detail
+			}
+			content = append(content, part)
+		}
+		payload["input"] = []map[string]any{{"role": "user", "content": content}}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

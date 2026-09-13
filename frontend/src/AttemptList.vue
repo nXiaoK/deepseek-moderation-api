@@ -25,6 +25,12 @@ defineProps<{ attempts: AuditAttempt[] }>();
             }}
           </p>
           <p class="muted small">
+            <template v-if="a.input_scope === 'text_and_images'"
+              >文本及 {{ a.image_count }} 张图片 ·
+            </template>
+            <template v-else-if="a.input_scope === 'text_only'"
+              >仅文本，图片已跳过 ·
+            </template>
             {{ a.latency_ms }} ms ·
             {{ a.usage.reported ? a.usage.total_tokens + " tokens" : "用量未知"
             }}<template v-if="a.error_code">

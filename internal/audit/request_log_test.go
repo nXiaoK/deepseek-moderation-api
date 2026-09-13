@@ -82,21 +82,29 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 		{"oversized", `{"model":"abuse-audit-v1","input":"` + strings.Repeat("x", 1024*1024+1) + `"}`, key, "request_validation", 413, false},
 		{"unknown_policy", `{"model":"missing","input":"test"}`, key, "policy_check", 404, false},
 		{"forbidden", valid, forbidden, "policy_check", 403, false},
-		{"image", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "input_validation", 400, false},
+		{"image", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "completed", 200, false},
 		{"empty", `{"model":"abuse-audit-v1","input":""}`, key, "input_validation", 400, false},
 		{"success", valid, key, "completed", 200, false},
 		{"image_fallback", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image` + strings.Repeat("a", 1024*1024) + `"}}]}`, key, "completed", 200, false},
 		{"model_failure", valid, key, "audit", 502, false},
-		{"input_storage_off", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "input_validation", 400, false},
+		{"input_storage_off", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "completed", 200, false},
 		{"disabled_policy", valid, key, "policy_check", 503, false},
 		{"revoked_key", valid, key, "authentication", 401, false},
 	}
 	for index, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "image_fallback" || tt.name == "input_storage_off" {
+				channel.TextOnly = tt.name == "image_fallback"
+				channel, err = store.SaveChannel(ctx, "admin", channel)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tt.name == "model_failure" {
 				modelOutput = `{"confidence":null}`
 			}
 			if tt.name == "input_storage_off" {
+				modelOutput = `{"confidence":0.9,"reason":"测试命中"}`
 				p, _ = store.Policy(ctx, p.ID)
 				p.Config.StoreInput = false
 				if err := store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
@@ -162,8 +170,8 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 			if tt.name == "image" && (log.Request.ImageCount != 1 || log.Request.TextChars != 18 || log.Input != "inspect screenshot") {
 				t.Fatalf("image metadata/input: %+v", log)
 			}
-			if tt.name == "image" && log.ErrorCode != "unsupported_input" {
-				t.Fatal("image rejection is not explained")
+			if tt.name == "image" && (log.Request.InputScope != "text_and_images" || !strings.Contains(modelInput, "private-image")) {
+				t.Fatal("image was not forwarded")
 			}
 			if tt.name == "image_fallback" {
 				if !log.Request.TextOnlyFallback || log.Request.ImageCount != 1 || log.Input != "inspect screenshot" || log.Confidence == nil || !log.Flagged || modelCalls != before+1 || w.Header().Get("X-Audit-Input-Scope") != "text-only" {

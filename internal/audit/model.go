@@ -11,6 +11,8 @@ import (
 )
 
 type PolicyConfig struct {
+	TextOnly           bool    `json:"text_only,omitempty"`
+	ImageCount         int     `json:"-"`
 	Provider           string  `json:"provider,omitempty"`
 	ConnectionRevision string  `json:"connection_revision,omitempty"`
 	ResultCacheTTL     int     `json:"result_cache_ttl_seconds"`
@@ -128,6 +130,7 @@ type ModelChannel struct {
 	TimeoutMS        int           `json:"timeout_ms"`
 	MaxTokens        int           `json:"max_tokens"`
 	MaxConcurrency   int           `json:"max_concurrency"`
+	TextOnly         bool          `json:"text_only"`
 	Enabled          bool          `json:"enabled"`
 	Revision         int64         `json:"revision"`
 	CacheEpoch       string        `json:"-"`
@@ -136,10 +139,12 @@ type ModelChannel struct {
 }
 
 func (c ModelChannel) Inference(r PolicySettings) PolicyConfig {
-	return PolicyConfig{Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
+	return PolicyConfig{TextOnly: c.TextOnly, Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
 }
 
 type AuditAttempt struct {
+	InputScope   string    `json:"input_scope,omitempty"`
+	ImageCount   int       `json:"image_count,omitempty"`
 	ErrorMessage string    `json:"error_message,omitempty"`
 	ModelOutput  string    `json:"model_output,omitempty"`
 	ID           string    `json:"id"`
@@ -202,6 +207,7 @@ type Usage struct {
 	Attempted         bool   `json:"-"`
 }
 type Response struct {
+	InputScope   string         `json:"input_scope,omitempty"`
 	ChannelID    string         `json:"channel_id"`
 	ActualModel  string         `json:"actual_model"`
 	AttemptCount int            `json:"attempt_count"`

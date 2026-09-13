@@ -14,6 +14,7 @@ import (
 )
 
 type CostReservation struct {
+	ImageInput                   bool
 	GatewayManaged               bool
 	Provider                     string
 	ID, ClientID, Kind, PolicyID string
@@ -103,13 +104,13 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		return nil, err
 	}
 	reserved := int64(0)
-	if card != nil && !cached {
+	if card != nil && !cached && cfg.ImageCount == 0 {
 		reserved, err = card.reserve(cfg, text)
 		if err != nil {
 			return nil, err
 		}
 	}
-	entry := &CostReservation{GatewayManaged: !cfg.officialPricing(), Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
+	entry := &CostReservation{ImageInput: cfg.ImageCount > 0, GatewayManaged: !cfg.officialPricing(), Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -131,6 +132,9 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 			return nil, err
 		}
 		if dayLimit.Valid || monthLimit.Valid {
+			if cfg.ImageCount > 0 {
+				return nil, problem(503, "pricing_unavailable", "图片用量暂不支持预估，无法在预算内发起审核")
+			}
 			if card == nil {
 				return nil, problem(503, "pricing_unavailable", "该模型未配置单价，无法在预算内发起审核")
 			}
@@ -194,8 +198,11 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 			amountArg = nil
 		} else {
 			amountArg = amount
-			if amount > entry.Reserved {
+			if amount > entry.Reserved && !entry.ImageInput {
 				note += "；实际计算费用高于预留，请检查预算及估算"
+			}
+			if entry.ImageInput {
+				note += "；图片请求按上游报告用量结算，未预估图片费用"
 			}
 		}
 	}
@@ -260,6 +267,7 @@ func (s *Store) Budgets(ctx context.Context, at time.Time) ([]BudgetView, error)
  COALESCE(SUM(c.amount_pico),0),COALESCE(SUM(c.reserved_pico) FILTER(WHERE c.amount_pico IS NULL),0)
  FROM client_api_keys k LEFT JOIN client_budgets b ON b.client_id=k.id
  LEFT JOIN audit_costs c ON c.client_id=k.id AND c.kind='production' AND c.budget_date >= $2::date AND c.budget_date < $2::date+INTERVAL '1 month'
+ WHERE k.deleted_at IS NULL
  GROUP BY k.id,k.name,b.revision,b.daily_limit,b.monthly_limit ORDER BY k.name`, date, month)
 	if err != nil {
 		return nil, err
@@ -316,7 +324,7 @@ func (s *Server) saveBudget(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	err := s.Store.mutate(r.Context(), actor(r), "budget.update", id, func(tx *sql.Tx) error {
 		var exists string
-		if err := tx.QueryRowContext(r.Context(), "SELECT id FROM client_api_keys WHERE id=$1 FOR UPDATE", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(r.Context(), "SELECT id FROM client_api_keys WHERE id=$1 AND deleted_at IS NULL FOR UPDATE", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return err
