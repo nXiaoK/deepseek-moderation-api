@@ -23,9 +23,16 @@ func (s *Store) assessmentCacheKey(client string, p Policy, cfg PolicyConfig, ve
 	_, _ = h.Write(raw)
 	return hex.EncodeToString(h.Sum(nil))
 }
-func (s *Store) CachedAssessment(ctx context.Context, key string) (*Assessment, error) {
+
+type CachedResult struct {
+	Assessment  Assessment
+	ActualModel string
+}
+
+func (s *Store) CachedAssessment(ctx context.Context, key string) (*CachedResult, error) {
+	var actualModel string
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, "SELECT assessment FROM assessment_cache WHERE cache_key=$1 AND expires_at>NOW()", key).Scan(&raw)
+	err := s.DB.QueryRowContext(ctx, "SELECT assessment,actual_model FROM assessment_cache WHERE cache_key=$1 AND expires_at>NOW()", key).Scan(&raw, &actualModel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -36,11 +43,11 @@ func (s *Store) CachedAssessment(ctx context.Context, key string) (*Assessment, 
 	if err != nil {
 		return nil, err
 	}
-	return &value, nil
+	return &CachedResult{value, actualModel}, nil
 }
-func (s *Store) CacheAssessment(ctx context.Context, key string, value Assessment, ttl int) error {
-	value.Reason = redact(value.Reason)
+func (s *Store) CacheAssessment(ctx context.Context, key string, value Assessment, ttl int, actualModel string) error {
+	value.Reason = redactReason(value.Reason)
 	raw, _ := json.Marshal(value)
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO assessment_cache(cache_key,assessment,expires_at) VALUES($1,$2,$3) ON CONFLICT(cache_key) DO UPDATE SET assessment=$2,expires_at=$3`, key, string(raw), time.Now().Add(time.Duration(ttl)*time.Second))
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO assessment_cache(cache_key,assessment,expires_at,actual_model) VALUES($1,$2,$3,$4) ON CONFLICT(cache_key) DO UPDATE SET assessment=$2,expires_at=$3,actual_model=$4`, key, string(raw), time.Now().Add(time.Duration(ttl)*time.Second), actualModel)
 	return err
 }

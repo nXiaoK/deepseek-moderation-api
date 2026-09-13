@@ -23,13 +23,14 @@ func configureBillingPolicy(t *testing.T, store *Store, cacheTTL int) (Policy, C
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Draft.CredentialID = cred
-	p.Draft.ResultCacheTTL = cacheTTL
-	if err = store.SaveDraft(ctx, "admin", p.ID, p.Name, p.DraftRevision, p.Draft); err != nil {
+	c := createTestChannel(t, store, cred, "billing", "deepseek-flash")
+	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
+	p.Config.ResultCacheTTL = cacheTTL
+	if err = store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = store.Policy(ctx, p.ID)
-	if _, err = store.Publish(ctx, "admin", p.ID, p.DraftRevision, 0); err != nil {
+	if err = store.SetPolicyState(ctx, "admin", p.ID, p.Revision, true); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = store.Policy(ctx, p.ID)
@@ -47,7 +48,7 @@ func TestConcurrentBudgetReservationPendingAndReconciliation(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	p, key := configureBillingPolicy(t, store, 0)
-	cfg := *p.Active
+	cfg := testInference(t, store, p)
 	now := time.Now()
 	price, err := store.Price(ctx, cfg.Model, now)
 	if err != nil || price == nil {
@@ -61,7 +62,7 @@ func TestConcurrentBudgetReservationPendingAndReconciliation(t *testing.T) {
 	errs := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			entry, e := store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, p.ActiveVersion, "hello", false, now)
+			entry, e := store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, "hello", false, now)
 			entries <- entry
 			errs <- e
 		}()
@@ -79,7 +80,7 @@ func TestConcurrentBudgetReservationPendingAndReconciliation(t *testing.T) {
 	if err != nil || pending.Status != "pending" || pending.AmountCNY != nil || pending.ReservedCNY != picoString(reservation) {
 		t.Fatalf("unknown usage released funds: %+v %v", pending, err)
 	}
-	if _, err = store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, p.ActiveVersion, "hello", false, now); err == nil {
+	if _, err = store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, "hello", false, now); err == nil {
 		t.Fatal("pending hold was ignored")
 	}
 	app, err := NewServer(store, "http://localhost:8090", t.TempDir())
@@ -93,11 +94,11 @@ func TestConcurrentBudgetReservationPendingAndReconciliation(t *testing.T) {
 	if err = app.reconcileCost(w, req); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, p.ActiveVersion, "hello", false, now); err != nil {
+	if _, err = store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, "hello", false, now); err != nil {
 		t.Fatal("reconciliation did not release hold", err)
 	}
 	var adjustments int
-	if err = store.DB.QueryRow("SELECT COUNT(*) FROM cost_adjustments WHERE request_id=$1", entry.ID).Scan(&adjustments); err != nil || adjustments != 1 {
+	if err = store.DB.QueryRow("SELECT COUNT(*) FROM cost_adjustments WHERE cost_id=$1", entry.ID).Scan(&adjustments); err != nil || adjustments != 1 {
 		t.Fatal("missing reconciliation audit trail", err)
 	}
 	if err = app.reconcileCost(httptest.NewRecorder(), req); err == nil {
@@ -108,9 +109,9 @@ func TestCostSnapshotSettlementIdempotencyAndPeriodBudgets(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	p, key := configureBillingPolicy(t, store, 0)
-	cfg := *p.Active
+	cfg := testInference(t, store, p)
 	now := time.Now()
-	entry, err := store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, p.ActiveVersion, "hello", false, now)
+	entry, err := store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, "hello", false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestCostSnapshotSettlementIdempotencyAndPeriodBudgets(t *testing.T) {
 		t.Fatal("settlement applied twice")
 	}
 	old := now.In(shanghai).AddDate(0, -1, 0)
-	_, err = store.DB.Exec(`INSERT INTO audit_costs(request_id,client_id,kind,policy_id,policy_version,model,started_at,budget_date,reserved_pico,amount_pico,status) VALUES('old-month',$1,'production',$2,1,$3,$4,$5,0,1000000000000,'reconciled')`, key.ID, p.ID, cfg.Model, old, old.Format("2006-01-02"))
+	_, err = store.DB.Exec(`INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,started_at,budget_date,reserved_pico,amount_pico,status) VALUES('old-month',$1,'production',$2,'old-month',$3,$4,$5,0,1000000000000,'reconciled')`, key.ID, p.ID, cfg.Model, old, old.Format("2006-01-02"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,7 @@ func TestExactResultCacheSavesTokensAndHonorsScopeAndBudget(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	p, key := configureBillingPolicy(t, store, 60)
-	cfg := *p.Active
+	cfg := testInference(t, store, p)
 	app, err := NewServer(store, "http://localhost:8090", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -164,29 +165,29 @@ func TestExactResultCacheSavesTokensAndHonorsScopeAndBudget(t *testing.T) {
 		body := `{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.1,\"reason\":\"正常开发\"}"}}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}`
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(body))}, nil
 	})}
-	first, err := app.runAudit(ctx, p, cfg, p.ActiveVersion, key.ID, "production", "same exact content")
+	first, err := runTestAudit(t, app, p, key.ID, "production", "same exact content")
 	if err != nil || first.CacheHit || first.Cost.Status != "calculated" {
 		t.Fatal("first audit failed", first, err)
 	}
 	if _, err = store.DB.Exec("INSERT INTO client_budgets(client_id,daily_limit,monthly_limit) VALUES($1,0,0)", key.ID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := app.runAudit(ctx, p, cfg, p.ActiveVersion, key.ID, "production", "same exact content")
+	second, err := runTestAudit(t, app, p, key.ID, "production", "same exact content")
 	if err != nil || !second.CacheHit || second.Usage.TotalTokens != 0 || second.Cost.AmountCNY == nil || *second.Cost.AmountCNY != "0" || calls.Load() != 1 {
 		t.Fatal("cache incurred a model call", second, err)
 	}
-	if _, err = app.runAudit(ctx, p, cfg, p.ActiveVersion, key.ID, "production", "different content"); err == nil || calls.Load() != 1 {
+	if _, err = runTestAudit(t, app, p, key.ID, "production", "different content"); err == nil || calls.Load() != 1 {
 		t.Fatal("budget did not prevent new model call")
 	}
-	if _, err = app.runAudit(ctx, p, cfg, p.ActiveVersion+1, key.ID, "production", "same exact content"); err == nil || calls.Load() != 1 {
-		t.Fatal("old policy version cache reused")
+	if _, err = runTestAudit(t, app, changedPolicy(p), key.ID, "production", "same exact content"); err == nil || calls.Load() != 1 {
+		t.Fatal("old configuration cache reused")
 	}
 	secret, _ := store.CredentialSecret(ctx, cfg.CredentialID)
 	a := store.assessmentCacheKey(key.ID, p, cfg, 1, secret, "text")
 	if a == store.assessmentCacheKey("other", p, cfg, 1, secret, "text") || a == store.assessmentCacheKey(key.ID, p, cfg, 1, "rotated-key", "text") {
 		t.Fatal("cache scope collision")
 	}
-	trial, err := app.runAudit(ctx, p, cfg, p.ActiveVersion, "admin", "test", "same exact content")
+	trial, err := runTestAudit(t, app, p, "admin", "test", "same exact content")
 	if err != nil || trial.CacheHit || calls.Load() != 2 {
 		t.Fatal("trial should call model and be separate from caller budget", err)
 	}

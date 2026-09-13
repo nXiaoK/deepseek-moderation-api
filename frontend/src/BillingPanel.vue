@@ -28,6 +28,8 @@ interface Budget {
   monthly_reserved_cny: string;
 }
 interface CostRow {
+  id: string;
+  channel_id: string;
   price_snapshot?: Price;
   request_id: string;
   client_id: string;
@@ -191,14 +193,14 @@ async function savePrice() {
     if (!priceForm.value) return;
     prices.value = await api("/admin/billing/prices", "POST", priceForm.value);
     priceForm.value = null;
-    notice.value = "新价格版本已生效，历史记录保持原快照。";
+    notice.value = "单价已保存，已有账单保留计费时的价格。";
   });
 }
 async function reconcile() {
   await run(async () => {
     if (!reconciliation.value) return;
     await api(
-      `/admin/billing/costs/${reconciliation.value.request_id}/reconcile`,
+      `/admin/billing/costs/${reconciliation.value.id}/reconcile`,
       "POST",
       { amount_cny: reconcileAmount.value, reason: reconcileReason.value },
     );
@@ -321,7 +323,7 @@ onMounted(refresh);
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in rows" :key="row.request_id">
+              <tr v-for="row in rows" :key="row.id">
                 <td>
                   {{ time(row.started_at)
                   }}<small>{{
@@ -347,7 +349,7 @@ onMounted(refresh);
                   ><small
                     >{{
                       row.cost.period === "gateway_managed"
-                        ? "Grok 网关额度"
+                        ? "网关计费"
                         : row.cost.period === "higher_rate_estimate"
                           ? "跨时段估算"
                           : row.cost.period === "peak"
@@ -492,9 +494,7 @@ onMounted(refresh);
         <div class="panel-heading">
           <div>
             <h2>{{ p.model }}</h2>
-            <p class="muted small">
-              价格版本 #{{ p.id }} · {{ time(p.effective_at) }}
-            </p>
+            <p class="muted small">生效时间 · {{ time(p.effective_at) }}</p>
           </div>
           <button @click="editPrice(p)">更新价格</button>
         </div>
@@ -520,7 +520,7 @@ onMounted(refresh);
       </section>
       <p class="muted small">
         初始化价格已按 2026-09-12
-        官方文档核对。价格变化时在此发布新版本；历史记录不跟随新价格重算。
+        官方文档核对。价格变化时在此保存新单价；已有账单不重新计价。
       </p></template
     >
     <div
@@ -540,7 +540,11 @@ onMounted(refresh);
         </div>
         <div class="stack-form">
           <p class="hint">{{ costDetail.cost.note }}</p>
-          <code>{{ costDetail.request_id }}</code>
+          <code>{{ costDetail.request_id }}</code
+          ><small
+            >费用记录 {{ costDetail.id }} · 通道
+            {{ costDetail.channel_id }}</small
+          >
           <p>
             {{ costDetail.model }} · {{ time(costDetail.started_at) }} ·
             {{ statusLabels[costDetail.cost.status] }}
@@ -586,10 +590,10 @@ onMounted(refresh);
         class="modal"
         role="dialog"
         aria-modal="true"
-        aria-label="发布模型单价"
+        aria-label="设置模型单价"
       >
         <div class="panel-heading">
-          <h2>发布模型单价</h2>
+          <h2>设置模型单价</h2>
           <button @click="priceForm = null" aria-label="关闭">×</button>
         </div>
         <form class="stack-form" @submit.prevent="savePrice">
@@ -624,7 +628,7 @@ onMounted(refresh);
               maxlength="500"
           /></label>
           <p class="muted small">以上均为每百万 tokens 的人民币单价。</p>
-          <button class="primary" :disabled="busy">发布新价格版本</button>
+          <button class="primary" :disabled="busy">保存单价</button>
           <p v-if="error" class="error">{{ error }}</p>
         </form>
       </section>

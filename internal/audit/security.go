@@ -150,6 +150,10 @@ func uniqueValue(d *json.Decoder, depth int) error {
 	_, err = d.Token()
 	return err
 }
+
+// MaxReasonRunes matches the existing sub2api custom_audit response contract.
+const MaxReasonRunes = 80
+
 func ParseAssessment(raw []byte) (Assessment, error) {
 	var data struct {
 		Confidence *float64 `json:"confidence"`
@@ -159,13 +163,13 @@ func ParseAssessment(raw []byte) (Assessment, error) {
 		return Assessment{}, fmt.Errorf("审核结果不是符合协议的 JSON: %w", err)
 	}
 	if data.Confidence == nil || data.Reason == nil {
-		return Assessment{}, errors.New("审核结果需包含 0～1 的 confidence 与最多 20 字的 reason")
+		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", MaxReasonRunes)
 	}
 	if *data.Confidence < 0 || *data.Confidence > 1 {
-		return Assessment{}, errors.New("审核结果需包含 0～1 的 confidence 与最多 20 字的 reason")
+		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", MaxReasonRunes)
 	}
-	if n := utf8.RuneCountInString(*data.Reason); n > 20 {
-		return Assessment{}, fmt.Errorf("reason 为 %d 字，超过 20 字上限", n)
+	if n := utf8.RuneCountInString(*data.Reason); n > MaxReasonRunes {
+		return Assessment{}, fmt.Errorf("reason 为 %d 字，超过 %d 字上限", n, MaxReasonRunes)
 	}
 	return Assessment{*data.Confidence, *data.Reason}, nil
 }

@@ -8,12 +8,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
 type Engine struct {
-	Client *http.Client
-	slots  chan struct{}
+	Client  *http.Client
+	slots   chan struct{}
+	routeMu sync.Mutex
+	routes  map[string]*channelState
 }
 
 func NewEngine(concurrency int) *Engine {
@@ -21,7 +24,7 @@ func NewEngine(concurrency int) *Engine {
 	transport.MaxIdleConnsPerHost = concurrency
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	return &Engine{Client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}, slots: make(chan struct{}, concurrency)}
+	return &Engine{Client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}, slots: make(chan struct{}, concurrency), routes: map[string]*channelState{}}
 }
 func upstreamCallError(err error, cfg PolicyConfig) error {
 	var ne net.Error
@@ -31,6 +34,9 @@ func upstreamCallError(err error, cfg PolicyConfig) error {
 	return problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 }
 func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string) (Assessment, Usage, string, error) {
+	if ctx.Err() != nil {
+		return Assessment{}, Usage{}, "", upstreamCallError(ctx.Err(), cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		return Assessment{}, Usage{}, "", problem(400, "invalid_config", err.Error())
 	}
@@ -64,7 +70,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, "", problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
+		return Assessment{}, attempt, "", classifyUpstream(res)
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 65537))
 	if err != nil {
@@ -116,78 +122,4 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", err.Error())
 	}
 	return assessment, usage, content, nil
-}
-
-func (s *Server) runAudit(ctx context.Context, p Policy, cfg PolicyConfig, version int, client, kind, text string) (Response, error) {
-	id := randomToken("audit_")
-	start := time.Now()
-	key, err := s.Store.CredentialForConfig(ctx, cfg)
-
-	var result Assessment
-	var usage Usage
-	var modelOutput string
-	var entry *CostReservation
-	var cost *CostView
-	cacheHit := false
-	cacheKey := ""
-	if err == nil && kind == "production" && cfg.ResultCacheTTL > 0 {
-		cacheKey = s.Store.assessmentCacheKey(client, p, cfg, version, key, text)
-		cached, cacheErr := s.Store.CachedAssessment(ctx, cacheKey)
-		if cacheErr != nil {
-			return Response{}, problem(503, "cache_unavailable", "审核缓存暂时不可用")
-		}
-		if cached != nil {
-			result = *cached
-			cacheHit = true
-			usage.Reported = true
-		}
-	}
-	if err == nil {
-		entry, err = s.Store.ReserveCost(ctx, id, client, kind, p, cfg, version, text, cacheHit, start)
-		if err != nil {
-			return Response{}, err
-		}
-		if cacheHit {
-			if raw, marshalErr := json.Marshal(result); marshalErr == nil {
-				modelOutput = string(raw)
-			}
-		} else {
-			result, usage, modelOutput, err = s.Engine.Assess(ctx, cfg, key, text)
-		}
-		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-		var settleErr error
-		cost, settleErr = s.Store.SettleCost(settleCtx, entry, usage, time.Now())
-		cancel()
-		if settleErr != nil {
-			return Response{}, problem(503, "cost_record_unavailable", "成本结算暂时不可用，预留费用待核对")
-		}
-		if err == nil && !cacheHit && cacheKey != "" {
-			cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-			_ = s.Store.CacheAssessment(cacheCtx, cacheKey, result, cfg.ResultCacheTTL)
-			cancel()
-		}
-	}
-	elapsed := time.Since(start).Milliseconds()
-	l := AuditLog{UpstreamRequestID: usage.UpstreamRequestID, Provider: cfg.ProviderID(), ID: id, Kind: kind, PolicyID: p.ID, PolicyVersion: version, ClientID: client, Model: cfg.Model, Threshold: cfg.Threshold, LatencyMS: elapsed, Usage: usage, InputStored: cfg.StoreInput, CreatedAt: time.Now().UTC(), Cost: cost, CacheHit: cacheHit, ModelOutput: storedModelOutput(modelOutput)}
-	if err == nil {
-		l.Confidence = &result.Confidence
-		l.Flagged = result.Confidence >= cfg.Threshold
-		l.Reason = redact(result.Reason)
-	} else {
-		l.ErrorCode = "internal_error"
-		var ae *APIError
-		if errors.As(err, &ae) {
-			l.ErrorCode = ae.Code
-		}
-	}
-	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
-	if recordErr := s.Store.Record(logCtx, l, text, cfg.RetentionDays); recordErr != nil {
-		return Response{}, problem(503, "record_unavailable", "审核记录暂时无法保存")
-	}
-	if err != nil {
-		return Response{}, err
-	}
-	item := Result{Flagged: l.Flagged, Categories: map[string]bool{"custom_policy": l.Flagged}, Scores: map[string]float64{"custom_policy": result.Confidence}, Audit: AuditMetadata{1, p.ID, version, result.Confidence, cfg.Threshold, l.Reason}}
-	return Response{Provider: cfg.ProviderID(), ID: id, Model: p.Alias, Results: []Result{item}, Usage: usage, LatencyMS: elapsed, Cost: cost, CacheHit: cacheHit}, nil
 }

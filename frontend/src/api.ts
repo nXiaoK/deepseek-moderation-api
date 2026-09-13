@@ -1,33 +1,65 @@
 export type Provider = "deepseek" | "grok_via_sub2api";
+export interface ChannelBinding {
+  channel_id: string;
+  priority: number;
+  weight: number;
+  enabled: boolean;
+}
 export interface Config {
-  provider?: Provider;
-  connection_revision?: string;
   result_cache_ttl_seconds: number;
   prompt: string;
   threshold: number;
-  model: string;
-  base_url: string;
-  credential_id: string;
-  timeout_ms: number;
-  max_tokens: number;
   store_input: boolean;
   retention_days: number;
+  total_timeout_ms: number;
+  max_attempts: number;
+  channels: ChannelBinding[];
 }
 export interface Policy {
   id: string;
   name: string;
   alias: string;
   enabled: boolean;
-  draft_revision: number;
-  active_version: number;
-  draft: Config;
-  active?: Config;
-}
-export interface Version {
-  version: number;
+  revision: number;
   config: Config;
-  created_at: string;
-  author: string;
+  updated_at: string;
+}
+export interface ModelChannel {
+  id: string;
+  name: string;
+  provider: Provider;
+  base_url: string;
+  model: string;
+  credential_id: string;
+  credential_active: boolean;
+  timeout_ms: number;
+  max_tokens: number;
+  max_concurrency: number;
+  enabled: boolean;
+  revision: number;
+  policy_names: string[];
+  health: {
+    status: string;
+    in_flight: number;
+    calls: number;
+    failures: number;
+    cooldown_until?: string;
+  };
+}
+export interface AuditAttempt {
+  error_message?: string;
+  model_output?: string;
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  provider: Provider;
+  model: string;
+  error_code: string;
+  latency_ms: number;
+  cache_hit: boolean;
+  sent: boolean;
+  usage: Usage;
+  cost?: CostView;
 }
 export interface Credential {
   provider: Provider;
@@ -55,6 +87,10 @@ export interface Metadata {
   reason: string;
 }
 export interface AuditResponse {
+  channel_id: string;
+  actual_model: string;
+  attempt_count: number;
+  attempts?: AuditAttempt[];
   provider?: Provider;
   id: string;
   model: string;
@@ -69,13 +105,16 @@ export interface AuditResponse {
   }[];
 }
 export interface AuditLog {
+  error_message?: string;
+  channel_id: string;
+  attempt_count: number;
+  attempts: AuditAttempt[];
   provider?: Provider;
   cost?: CostView;
   cache_hit?: boolean;
   id: string;
   kind: string;
   policy_id: string;
-  policy_version: number;
   client_id: string;
   model: string;
   flagged: boolean;

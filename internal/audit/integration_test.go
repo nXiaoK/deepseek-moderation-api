@@ -131,18 +131,19 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 		t.Fatal("credential leaked")
 	}
 	p, _ := store.Policy(context.Background(), "abuse-default")
-	if p.Draft.Prompt != InitialPrompt || p.Active != nil {
-		t.Fatal("wrong initial template or implicitly published")
+	if p.Config.Prompt != InitialPrompt || p.Enabled {
+		t.Fatal("wrong initial template or implicitly enabled")
 	}
-	p.Draft.CredentialID = credentials[0].ID
-	p.Draft.StoreInput = true
+	c := createTestChannel(t, store, credentials[0].ID, "lifecycle", "deepseek-flash")
+	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
+	p.Config.StoreInput = true
 	save := func(p Policy, want int) {
-		call("PUT", "/admin/policies/abuse-default/draft", map[string]any{"expected_revision": p.DraftRevision, "name": p.Name, "config": p.Draft}, "", want)
+		call("PUT", "/admin/policies/abuse-default/config", map[string]any{"expected_revision": p.Revision, "name": p.Name, "config": p.Config}, "", want)
 	}
 	save(p, 200)
 	save(p, 409)
 	p, _ = store.Policy(context.Background(), p.ID)
-	call("POST", "/admin/policies/abuse-default/publish", map[string]any{"expected_revision": p.DraftRevision}, "", 200)
+	call("PUT", "/admin/policies/abuse-default/state", map[string]any{"expected_revision": p.Revision, "enabled": true}, "", 200)
 	created := call("POST", "/admin/api-keys", map[string]any{"name": "sub2api-test", "policy_ids": []string{p.ID}, "rpm": 60}, "", 201)
 	var token struct{ Token string }
 	_ = json.Unmarshal(created, &token)
@@ -150,8 +151,15 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	response := call("POST", "/v1/moderations", request, token.Token, 200)
 	var result Response
 	_ = json.Unmarshal(response, &result)
-	if !result.Results[0].Flagged || result.Results[0].Audit.PolicyVersion != 1 {
+	if !result.Results[0].Flagged || result.Results[0].Audit.PolicyVersion < 1 {
 		t.Fatal("threshold equality or revision incorrect")
+	}
+	// Match the existing sub2api custom_audit validation contract without
+	// importing or modifying the sub2api project.
+	item := result.Results[0]
+	meta := item.Audit
+	if result.ID == "" || result.Model != "abuse-audit-v1" || len(result.Results) != 1 || meta.SchemaVersion != 1 || meta.PolicyID != "abuse-default" || meta.PolicyVersion < 1 || item.Flagged != (meta.Confidence >= meta.Threshold) || len(item.Categories) != 1 || len(item.Scores) != 1 || item.Categories["custom_policy"] != item.Flagged || item.Scores["custom_policy"] != meta.Confidence {
+		t.Fatal("sub2api response contract broken", result)
 	}
 	mu.Lock()
 	if sentPrompt != InitialPrompt {
@@ -159,27 +167,29 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	}
 	mu.Unlock()
 	p, _ = store.Policy(context.Background(), p.ID)
-	p.Draft.Prompt = "custom prompt json"
-	p.Draft.Threshold = .9
+	p.Config.Prompt = "custom prompt json"
+	p.Config.Threshold = .9
 	save(p, 200)
 	response = call("POST", "/v1/moderations", request, token.Token, 200)
 	_ = json.Unmarshal(response, &result)
-	if !result.Results[0].Flagged {
-		t.Fatal("draft changed production behavior")
+	if result.Results[0].Flagged {
+		t.Fatal("save did not activate current settings")
 	}
-	p, _ = store.Policy(context.Background(), p.ID)
-	call("POST", "/admin/policies/abuse-default/publish", map[string]any{"expected_revision": p.DraftRevision}, "", 200)
+	// Unsaved preview must not change production.
+	preview := p.Config
+	preview.Threshold = .7
+	call("POST", "/admin/policies/abuse-default/test", map[string]any{"config": preview, "input": "preview"}, "", 200)
 	response = call("POST", "/v1/moderations", request, token.Token, 200)
 	_ = json.Unmarshal(response, &result)
-	if result.Results[0].Flagged || result.Results[0].Audit.PolicyVersion != 2 {
-		t.Fatal("publish did not activate full snapshot")
+	if result.Results[0].Flagged {
+		t.Fatal("preview changed production")
 	}
-	p, _ = store.Policy(context.Background(), p.ID)
-	call("POST", "/admin/policies/abuse-default/rollback", map[string]any{"expected_revision": p.DraftRevision, "version": 1}, "", 200)
-	response = call("POST", "/v1/moderations", request, token.Token, 200)
-	_ = json.Unmarshal(response, &result)
-	if !result.Results[0].Flagged || result.Results[0].Audit.PolicyVersion != 3 {
-		t.Fatal("rollback must create new version")
+	for _, endpoint := range []string{"publish", "rollback", "versions"} {
+		method := "POST"
+		if endpoint == "versions" {
+			method = "GET"
+		}
+		call(method, "/admin/policies/abuse-default/"+endpoint, map[string]any{}, "", 404)
 	}
 	mu.Lock()
 	modelContent = `{"confidence":null,"reason":""}`
@@ -225,7 +235,7 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	call("GET", "/admin/policies", nil, "", 401)
 }
 
-func TestPublishConcurrentCASAndRevokedCredentials(t *testing.T) {
+func TestSaveConcurrentCASAndRevokedCredentials(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	cred, err := store.SaveCredential(ctx, "admin", "", "test", "test-only-secret", true)
@@ -233,14 +243,15 @@ func TestPublishConcurrentCASAndRevokedCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, _ := store.Policy(ctx, "abuse-default")
-	p.Draft.CredentialID = cred
-	if err = store.SaveDraft(ctx, "admin", p.ID, p.Name, p.DraftRevision, p.Draft); err != nil {
+	c := createTestChannel(t, store, cred, "cas", "deepseek-flash")
+	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
+	if err = store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = store.Policy(ctx, p.ID)
 	errs := make(chan error, 2)
 	for i := 0; i < 2; i++ {
-		go func() { _, e := store.Publish(ctx, "admin", p.ID, p.DraftRevision, 0); errs <- e }()
+		go func() { e := store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); errs <- e }()
 	}
 	a, b := <-errs, <-errs
 	if (a == nil) == (b == nil) {
@@ -253,8 +264,8 @@ func TestPublishConcurrentCASAndRevokedCredentials(t *testing.T) {
 		t.Fatal("revoked credential usable")
 	}
 	p, _ = store.Policy(ctx, p.ID)
-	if _, err = store.Publish(ctx, "admin", p.ID, p.DraftRevision, 0); err == nil {
-		t.Fatal("published with disabled credential")
+	if err = store.SetPolicyState(ctx, "admin", p.ID, p.Revision, true); err == nil {
+		t.Fatal("enabled with disabled credential")
 	}
 }
 

@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import BillingPanel from "./BillingPanel.vue";
+import PolicyEditor from "./PolicyEditor.vue";
+import ChannelPanel from "./ChannelPanel.vue";
+import AttemptList from "./AttemptList.vue";
+import { auditError, formatModelOutput, lastModelOutput } from "./auditDisplay";
 import {
   api,
   APIError,
   setCSRF,
   type AuditLog,
-  type AuditResponse,
   type ClientKey,
   type Config,
   type Credential,
   type Policy,
   type Provider,
-  type Version,
+  type ModelChannel,
 } from "./api";
 
 const user = ref(""),
@@ -22,8 +25,7 @@ const user = ref(""),
   notice = ref("");
 const username = ref("admin"),
   password = ref("");
-const page = ref("policies"),
-  tab = ref("prompt");
+const page = ref("policies");
 const policies = ref<Policy[]>([]),
   selected = ref<Policy | null>(null),
   config = ref<Config | null>(null),
@@ -31,7 +33,7 @@ const policies = ref<Policy[]>([]),
   baseline = ref("");
 const credentials = ref<Credential[]>([]),
   keys = ref<ClientKey[]>([]),
-  versions = ref<Version[]>([]);
+  channels = ref<ModelChannel[]>([]);
 const overview = ref<Record<string, number>>({}),
   actions = ref<
     {
@@ -41,19 +43,12 @@ const overview = ref<Record<string, number>>({}),
       created_at: string;
     }[]
   >([]);
-const testInput = ref(""),
-  testSource = ref("draft"),
-  testResult = ref<AuditResponse | null>(null),
-  testError = ref(""),
-  showPreview = ref(false);
 const creating = ref(false),
   newName = ref(""),
   newAlias = ref(""),
   copySource = ref("");
 const credentialProvider = ref<Provider>("deepseek"),
   credentialBaseURL = ref("https://api.deepseek.com");
-const grokModels = ref<string[]>([]),
-  connectionVerified = ref(false);
 const credentialName = ref(""),
   credentialSecret = ref(""),
   credentialEditID = ref("");
@@ -71,17 +66,17 @@ const logItems = ref<AuditLog[]>([]),
   logFrom = ref(""),
   logTo = ref(""),
   detail = ref<AuditLog | null>(null);
-const compareVersion = ref<Version | null>(null),
-  currentPassword = ref(""),
+const currentPassword = ref(""),
   newPassword = ref("");
 const nav = [
   ["overview", "运行概览", "01"],
   ["policies", "审核策略", "02"],
-  ["credentials", "模型密钥", "03"],
-  ["keys", "访问密钥", "04"],
-  ["logs", "审核记录", "05"],
-  ["billing", "成本与预算", "06"],
-  ["settings", "系统设置", "07"],
+  ["channels", "审核模型", "03"],
+  ["credentials", "连接密钥", "04"],
+  ["keys", "访问密钥", "05"],
+  ["logs", "审核记录", "06"],
+  ["billing", "成本与预算", "07"],
+  ["settings", "系统设置", "08"],
 ];
 const title = computed(
   () => nav.find((n) => n[0] === page.value)?.[1] || "审核策略",
@@ -91,57 +86,11 @@ const dirty = computed(
     JSON.stringify({ name: policyName.value, config: config.value }) !==
       baseline.value && !!selected.value,
 );
-const credentialReady = computed(() =>
-  credentials.value.some(
-    (c) =>
-      c.id === config.value?.credential_id &&
-      c.active &&
-      c.provider === (config.value?.provider || "deepseek"),
-  ),
-);
-const preview = computed(() => {
-  const grok = config.value?.provider === "grok_via_sub2api";
-  return JSON.stringify(
-    grok
-      ? {
-          model: config.value?.model,
-          stream: true,
-          temperature: 0,
-          max_output_tokens: config.value?.max_tokens,
-          text: { format: { type: "json_object" } },
-          reasoning: { effort: "none" },
-          instructions: config.value?.prompt,
-          input: `<user_input>${testInput.value}</user_input>`,
-        }
-      : {
-          model: config.value?.model,
-          thinking: { type: "disabled" },
-          stream: false,
-          temperature: 0,
-          max_tokens: config.value?.max_tokens,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: config.value?.prompt },
-            {
-              role: "user",
-              content: `<user_input>${testInput.value}</user_input>`,
-            },
-          ],
-        },
-    null,
-    2,
-  );
-});
 const time = (v: string) =>
   new Date(v).toLocaleString("zh-CN", { hour12: false });
 const modelOutputText = (log: AuditLog) => {
-  if (log.model_output) {
-    try {
-      return JSON.stringify(JSON.parse(log.model_output), null, 2);
-    } catch {
-      return log.model_output;
-    }
-  }
+  const output = lastModelOutput(log);
+  if (output) return formatModelOutput(output);
   if (log.confidence != null && log.reason) {
     return JSON.stringify(
       { confidence: log.confidence, reason: log.reason },
@@ -154,6 +103,18 @@ const modelOutputText = (log: AuditLog) => {
 const detailModelOutput = computed(() =>
   detail.value ? modelOutputText(detail.value) : "",
 );
+const showStandaloneOutput = computed(() => {
+  const log = detail.value;
+  if (!log?.attempts?.length) return true;
+  return (
+    !!detailModelOutput.value &&
+    !log.attempts.some(
+      (attempt) =>
+        attempt.model_output &&
+        formatModelOutput(attempt.model_output) === detailModelOutput.value,
+    )
+  );
+});
 const policyLabel = (id: string) =>
   policies.value.find((p) => p.id === id)?.name || id;
 const clientLabel = (id: string) =>
@@ -178,29 +139,25 @@ async function run(fn: () => Promise<void>) {
 }
 function usePolicy(p: Policy) {
   selected.value = p;
-  config.value = structuredClone(p.draft);
-  config.value.provider ||= "deepseek";
-  grokModels.value = [];
-  connectionVerified.value = false;
+  config.value = structuredClone(p.config);
   policyName.value = p.name;
   baseline.value = JSON.stringify({ name: p.name, config: config.value });
-  testResult.value = null;
-  testError.value = "";
 }
 async function loadPolicy(id: string) {
   const p = await api<Policy>(`/admin/policies/${id}`);
   usePolicy(p);
-  versions.value = await api<Version[]>(`/admin/policies/${id}/versions`);
 }
 async function refresh() {
-  const [ps, cs, ks] = await Promise.all([
+  const [ps, cs, ks, chs] = await Promise.all([
     api<Policy[]>("/admin/policies"),
     api<Credential[]>("/admin/credentials"),
     api<ClientKey[]>("/admin/api-keys"),
+    api<ModelChannel[]>("/admin/model-channels"),
   ]);
   policies.value = ps;
   credentials.value = cs;
   keys.value = ks;
+  channels.value = chs;
   if (!selected.value && ps[0]) {
     await loadPolicy(ps[0].id);
     keyPolicies.value = [ps[0].id];
@@ -246,6 +203,8 @@ async function navigate(target: string) {
   notice.value = "";
   await run(async () => {
     if (target === "overview") overview.value = await api("/admin/overview");
+    if (target === "policies" || target === "channels")
+      channels.value = await api("/admin/model-channels");
     if (target === "logs") await loadLogs();
     if (target === "credentials")
       credentials.value = await api("/admin/credentials");
@@ -256,58 +215,25 @@ async function navigate(target: string) {
 async function save() {
   if (!selected.value || !config.value) return;
   const p = await api<Policy>(
-    `/admin/policies/${selected.value.id}/draft`,
+    `/admin/policies/${selected.value.id}/config`,
     "PUT",
     {
-      expected_revision: selected.value.draft_revision,
+      expected_revision: selected.value.revision,
       name: policyName.value,
       config: config.value,
     },
   );
-  const prev = testResult.value;
   usePolicy(p);
-  testResult.value = prev;
   policies.value = await api("/admin/policies");
 }
-async function saveDraft() {
+async function saveCurrent() {
   await run(async () => {
     await save();
-    notice.value = "草稿已保存，正式审核配置保持当前发布版本。";
+    notice.value = "配置已保存，后续请求直接使用当前配置。";
   });
 }
-async function publish() {
-  await run(async () => {
-    if (dirty.value) await save();
-    if (!selected.value) return;
-    await api(`/admin/policies/${selected.value.id}/publish`, "POST", {
-      expected_revision: selected.value.draft_revision,
-    });
-    await loadPolicy(selected.value.id);
-    policies.value = await api("/admin/policies");
-    notice.value = "配置已发布，后续请求使用新版本。";
-  });
-}
-async function test() {
-  await run(async () => {
-    testError.value = "";
-    testResult.value = null;
-    try {
-      if (testSource.value === "draft" && dirty.value) await save();
-      if (!selected.value) return;
-      testResult.value = await api<AuditResponse>(
-        `/admin/policies/${selected.value.id}/test`,
-        "POST",
-        {
-          input: testInput.value,
-          source: testSource.value,
-          expected_revision: selected.value.draft_revision,
-        },
-      );
-    } catch (e) {
-      testError.value = message(e);
-      throw e;
-    }
-  });
+async function reloadChannels() {
+  channels.value = await api("/admin/model-channels");
 }
 async function createPolicy() {
   await run(async () => {
@@ -321,19 +247,7 @@ async function createPolicy() {
     creating.value = false;
     newName.value = "";
     newAlias.value = "";
-    notice.value = "策略草稿已创建。";
-  });
-}
-async function rollback(v: Version) {
-  await run(async () => {
-    if (!selected.value) return;
-    await api(`/admin/policies/${selected.value.id}/rollback`, "POST", {
-      expected_revision: selected.value.draft_revision,
-      version: v.version,
-    });
-    await loadPolicy(selected.value.id);
-    compareVersion.value = null;
-    notice.value = `已将 v${v.version} 的配置发布为新版本。`;
+    notice.value = "策略已创建，配置模型通道后即可启用。";
   });
 }
 async function togglePolicy() {
@@ -342,9 +256,13 @@ async function togglePolicy() {
     const p = await api<Policy>(
       `/admin/policies/${selected.value.id}/state`,
       "PUT",
-      { enabled: !selected.value.enabled },
+      {
+        enabled: !selected.value.enabled,
+        expected_revision: selected.value.revision,
+      },
     );
     selected.value.enabled = p.enabled;
+    selected.value.revision = p.revision;
     policies.value = await api("/admin/policies");
     notice.value = p.enabled
       ? "策略已启用。"
@@ -353,7 +271,7 @@ async function togglePolicy() {
 }
 async function saveCredential() {
   await run(async () => {
-    const result = await api<{ id: string }>(
+    await api<{ id: string }>(
       `/admin/credentials${credentialEditID.value ? "/" + credentialEditID.value : ""}`,
       credentialEditID.value ? "PUT" : "POST",
       {
@@ -365,14 +283,6 @@ async function saveCredential() {
       },
     );
     credentials.value = await api("/admin/credentials");
-    if (
-      config.value &&
-      !config.value.credential_id &&
-      (config.value.provider || "deepseek") === credentialProvider.value
-    ) {
-      config.value.credential_id = result.id;
-      selectConnection();
-    }
     credentialEditID.value = "";
     credentialName.value = "";
     credentialSecret.value = "";
@@ -390,40 +300,6 @@ async function toggleCredential(c: Credential) {
     });
     credentials.value = await api("/admin/credentials");
     notice.value = c.active ? "密钥已停用。" : "密钥已启用。";
-  });
-}
-function changeProvider() {
-  if (!config.value) return;
-  config.value.credential_id = "";
-  config.value.base_url =
-    config.value.provider === "grok_via_sub2api"
-      ? ""
-      : "https://api.deepseek.com";
-  config.value.model =
-    config.value.provider === "grok_via_sub2api"
-      ? "grok-4.6"
-      : "deepseek-flash";
-  config.value.max_tokens = 512;
-  grokModels.value = [];
-  connectionVerified.value = false;
-}
-function selectConnection() {
-  if (!config.value) return;
-  const c = credentials.value.find((c) => c.id === config.value?.credential_id);
-  if (c) config.value.base_url = c.base_url;
-  grokModels.value = [];
-  connectionVerified.value = false;
-}
-async function probeConnection() {
-  await run(async () => {
-    if (!config.value) return;
-    const caps = await api<{
-      models: string[];
-    }>("/admin/connections/probe", "POST", { config: config.value });
-    grokModels.value = caps.models;
-    connectionVerified.value = true;
-    notice.value =
-      "模型列表已读取，可选择或手动填写模型后试跑：" + caps.models.join("、");
   });
 }
 async function createKey() {
@@ -589,18 +465,20 @@ window.addEventListener("beforeunload", (e) => {
             <p class="muted">
               {{
                 page === "policies"
-                  ? "编辑你的审核规则，试跑验证后发布。"
+                  ? "配置审核规则与模型调度，保存后直接生效。"
                   : page === "overview"
                     ? "过去 24 小时的正式审核请求。"
-                    : page === "credentials"
-                      ? "管理 DeepSeek 官方密钥与 sub2api Grok 服务连接。"
-                      : page === "keys"
-                        ? "为 sub2api 和其他调用方分配独立访问凭证。"
-                        : page === "logs"
-                          ? "追踪每次判定使用的策略版本、评分与原因。"
-                          : page === "billing"
-                            ? "追踪上游 token 成本，设置调用方的日预算与月预算。"
-                            : "管理账户和查看后台操作记录。"
+                    : page === "channels"
+                      ? "管理多个审核模型通道，查看并发与连接状态。"
+                      : page === "credentials"
+                        ? "管理 DeepSeek 官方或第三方接口，以及 sub2api Grok 连接。"
+                        : page === "keys"
+                          ? "为 sub2api 和其他调用方分配独立访问凭证。"
+                          : page === "logs"
+                            ? "追踪实际模型、调用过程、评分与原因。"
+                            : page === "billing"
+                              ? "追踪上游 token 成本，设置调用方的日预算与月预算。"
+                              : "管理账户和查看后台操作记录。"
               }}
             </p>
           </div>
@@ -639,412 +517,48 @@ window.addEventListener("beforeunload", (e) => {
                   {{ p.name }}
                 </option>
               </select></label
-            ><code>{{ selected.alias }}</code
+            >
+            <code>{{ selected.alias }}</code
             ><span class="badge" :class="selected.enabled ? 'green' : 'gray'">{{
               selected.enabled ? "已启用" : "已停用"
-            }}</span
-            ><span class="muted">{{
-              selected.active_version
-                ? `线上 v${selected.active_version}`
-                : "尚未发布"
-            }}</span
-            ><button class="text-button" @click="togglePolicy" :disabled="busy">
+            }}</span>
+            <button @click="togglePolicy" :disabled="busy || dirty">
               {{ selected.enabled ? "停用策略" : "启用策略" }}
             </button>
           </div>
-          <div class="tabs" role="tablist" aria-label="策略配置">
-            <button
-              v-for="t in [
-                ['prompt', '提示词配置'],
-                ['model', '模型与判定'],
-                ['versions', '版本历史'],
-              ]"
-              :key="t[0]"
-              role="tab"
-              :aria-selected="tab === t[0]"
-              :class="{ active: tab === t[0] }"
-              @click="tab = t[0]"
-            >
-              {{ t[1] }}
-            </button>
-          </div>
-          <div v-if="tab === 'prompt'" class="editor-layout">
-            <section class="panel editor-panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>审核提示词</h2>
-                  <p class="muted small">完整内容作为模型的系统提示词发送。</p>
-                </div>
-                <span class="badge" :class="dirty ? 'amber' : 'gray'">{{
-                  dirty ? "未保存" : "草稿已保存"
-                }}</span>
-              </div>
-              <label class="sr-only" for="prompt-editor">审核提示词</label
-              ><textarea
-                id="prompt-editor"
-                v-model="config.prompt"
-                class="prompt-editor"
-                spellcheck="false"
-                :disabled="busy"
-              ></textarea>
-              <div class="editor-foot">
-                <span
-                  >{{
-                    Array.from(config.prompt).length.toLocaleString()
-                  }}
-                  字符</span
-                ><button
-                  class="text-button"
-                  @click="showPreview = !showPreview"
-                >
-                  {{ showPreview ? "收起请求预览" : "预览实际模型请求" }}
-                </button>
-              </div>
-              <div class="contract">
-                <span class="tiny-label">输出协议</span
-                ><code>{"confidence": 0.00, "reason": "..."}</code
-                ><span class="muted small"
-                  >reason 最多 20 字；评分范围 0～1。</span
-                >
-              </div>
-              <pre v-if="showPreview" class="request-preview">{{
-                preview
-              }}</pre>
-            </section>
-            <section class="panel test-panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>审核试跑</h2>
-                  <p class="muted small">调用真实模型验证效果。</p>
-                </div>
-                <span class="live-dot" aria-label="真实 API 调用"></span>
-              </div>
-              <label
-                >使用版本<select v-model="testSource" :disabled="busy">
-                  <option value="draft">
-                    当前草稿{{ dirty ? "（先保存）" : "" }}
-                  </option>
-                  <option
-                    value="published"
-                    :disabled="!selected.active_version"
-                  >
-                    已发布 v{{ selected.active_version }}
-                  </option>
-                </select></label
-              ><label
-                >待审核内容<textarea
-                  v-model="testInput"
-                  rows="7"
-                  placeholder="粘贴一段内容，查看模型如何判定…"
-                  :disabled="busy"
-                ></textarea>
-              </label>
-              <div v-if="!credentialReady" class="hint">
-                尚未选择可用模型密钥。<button
-                  class="text-button"
-                  @click="tab = 'model'"
-                >
-                  前往配置
-                </button>
-              </div>
-              <button
-                class="primary full"
-                @click="test"
-                :disabled="busy || !testInput.trim()"
-              >
-                {{
-                  busy
-                    ? "正在处理…"
-                    : testSource === "draft" && dirty
-                      ? "保存并试跑"
-                      : "运行审核"
-                }}
-              </button>
-              <p class="muted small">试跑不触发正式请求的封禁或通知。</p>
-              <div v-if="testError" class="test-error" role="alert">
-                <strong>审核未完成</strong>
-                <p>{{ testError }}</p>
-              </div>
-              <div
-                v-else-if="testResult"
-                class="test-result"
-                aria-live="polite"
-              >
-                <div class="result-heading">
-                  <span
-                    class="badge"
-                    :class="testResult.results[0].flagged ? 'red' : 'green'"
-                    >{{
-                      testResult.results[0].flagged ? "命中策略" : "未命中"
-                    }}</span
-                  ><span class="muted small"
-                    >{{ testResult.latency_ms }} ms</span
-                  >
-                </div>
-                <div class="score">
-                  {{ testResult.results[0].audit.confidence.toFixed(2)
-                  }}<span>模型违规评分</span>
-                </div>
-                <div class="meter">
-                  <span
-                    :style="{
-                      width: `${testResult.results[0].audit.confidence * 100}%`,
-                    }"
-                    :class="{ hit: testResult.results[0].flagged }"
-                  ></span>
-                </div>
-                <div class="result-line">
-                  <span>判定阈值</span
-                  ><strong>{{ testResult.results[0].audit.threshold }}</strong>
-                </div>
-                <div class="result-line">
-                  <span>使用版本</span
-                  ><strong>{{
-                    testResult.results[0].audit.policy_version
-                      ? `v${testResult.results[0].audit.policy_version}`
-                      : "草稿"
-                  }}</strong>
-                </div>
-                <p class="reason">
-                  {{ testResult.results[0].audit.reason || "模型未填写原因。" }}
-                </p>
-                <p v-if="testResult.cost" class="muted small">
-                  本次费用：{{
-                    testResult.cost.amount_cny === null
-                      ? "待核对"
-                      : "¥" + testResult.cost.amount_cny
-                  }}
-                  ·
-                  {{
-                    testResult.cost.status === "estimated"
-                      ? "估算"
-                      : testResult.cost.status === "pending"
-                        ? "等待费用核对"
-                        : "按用量计算"
-                  }}
-                </p>
-                <span class="muted small"
-                  >{{
-                    testResult.usage.reported
-                      ? testResult.usage.total_tokens + " tokens"
-                      : "用量未返回"
-                  }}
-                  · {{ testResult.id.slice(0, 18) }}…</span
-                >
-              </div>
-              <div v-else class="test-empty">
-                <span>◇</span>
-                <p>等待一次审核</p>
-                <small>评分与判定会显示在这里</small>
-              </div>
-            </section>
-          </div>
-          <section v-if="tab === 'model'" class="panel settings-panel">
-            <div class="panel-heading">
-              <h2>模型连接与判定</h2>
-              <span class="badge gray">草稿配置</span>
-            </div>
-            <div
-              v-if="config.provider === 'grok_via_sub2api'"
-              class="hint grok-connection"
-            >
-              <p>
-                填写 sub2api 提供的普通 API Key 和 Grok 模型名，直接调用
-                /v1/responses 流式接口。审核对外仍返回完整
-                /v1/moderations JSON。无需管理员登录、OAuth
-                授权或专用服务绑定。
-              </p>
-              <button
-                @click="probeConnection"
-                :disabled="busy || !credentialReady"
-              >
-                读取模型列表（可选）
-              </button>
-              <p v-if="connectionVerified">
-                已读取标准 /v1/models
-                列表。接口未提供列表时也可手动填写模型，支持情况以试跑为准。
-              </p>
-              <p>
-                Grok 成本按套餐/网关额度管理，不套用 DeepSeek
-                单价。当前无法确认逐次货币成本；启用了人民币预算的调用方可能因价格未知而被拒绝。
-              </p>
-            </div>
-            <div class="form-grid">
-              <label
-                >审核供应商<select
-                  v-model="config.provider"
-                  @change="changeProvider"
-                  :disabled="busy"
-                >
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="grok_via_sub2api">Grok（sub2api API）</option>
-                </select></label
-              >
-              <label v-if="config.provider === 'grok_via_sub2api'"
-                >连接修订<input
-                  v-model="config.connection_revision"
-                  placeholder="例如：grok-pool-v1"
-                  :disabled="busy"
-                /><small class="muted"
-                  >更改 sub2api
-                  模型映射后更新此值并发布，使结果缓存失效。</small
-                ></label
-              >
-              <datalist id="grok-audit-models">
-                <option v-for="m in grokModels" :key="m" :value="m" />
-              </datalist>
-
-              <label
-                >策略名称<input v-model="policyName" :disabled="busy" /></label
-              ><label
-                >审核模型<input
-                  v-model="config.model"
-                  list="grok-audit-models"
-                  :disabled="busy" /></label
-              ><label
-                >模型连接地址<input
-                  v-model="config.base_url"
-                  :readonly="config.provider === 'grok_via_sub2api'"
-                  type="url"
-                  :disabled="busy" /></label
-              ><label
-                >上游密钥<select
-                  v-model="config.credential_id"
-                  @change="selectConnection"
-                  :disabled="busy"
-                >
-                  <option value="">请选择密钥</option>
-                  <option
-                    v-for="c in credentials.filter(
-                      (item) =>
-                        item.provider === (config?.provider || 'deepseek'),
-                    )"
-                    :key="c.id"
-                    :value="c.id"
-                    :disabled="!c.active"
-                  >
-                    {{ c.name }} · {{ c.masked
-                    }}{{ c.active ? "" : "（已停用）" }}
-                  </option></select
-                ><button class="text-button" @click="navigate('credentials')">
-                  管理模型密钥 →
-                </button></label
-              ><label
-                >拦截阈值<input
-                  v-model.number="config.threshold"
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  :disabled="busy"
-                /><small class="muted"
-                  >评分 ≥ 阈值时命中。数值越低，越容易拦截。</small
-                ></label
-              ><label
-                >请求超时（毫秒）<input
-                  v-model.number="config.timeout_ms"
-                  type="number"
-                  min="1000"
-                  max="30000"
-                  step="1000"
-                  :disabled="busy" /></label
-              ><label
-                >最大输出 tokens<input
-                  v-model.number="config.max_tokens"
-                  type="number"
-                  min="64"
-                  max="4096"
-                  :disabled="busy" /></label
-              ><label
-                >审核记录保留（天）<input
-                  v-model.number="config.retention_days"
-                  type="number"
-                  min="1"
-                  max="365"
-                  :disabled="busy"
-              /></label>
-            </div>
-            <label class="cache-config"
-              >重复请求结果缓存（秒）
-              <input
-                v-model.number="config.result_cache_ttl_seconds"
-                type="number"
-                min="0"
-                max="3600"
-                :disabled="busy"
-              />
-              <small class="muted"
-                >0
-                为关闭。启用并发布后，相同调用方、策略版本、模型配置、密钥和完整输入可复用结果；后台试跑始终调用模型。</small
-              >
-            </label>
-            <label class="check-row"
-              ><input
-                v-model="config.store_input"
-                type="checkbox"
-                :disabled="busy"
-              /><span
-                >保存审核输入原文<small
-                  >启用后加密存储，管理员可在记录详情中查看；到期清理。</small
-                ></span
-              ></label
-            >
-            <p class="hint">
-              DeepSeek 使用非思考模式；Grok 参数按模型接口适配。均返回
-              JSON，不允许执行搜索或其他工具。
-            </p>
-          </section>
-          <section v-if="tab === 'versions'" class="panel">
-            <div class="panel-heading">
-              <h2>发布历史</h2>
-              <span class="muted small">回滚会创建一个新版本</span>
-            </div>
-            <div v-if="!versions.length" class="empty">
-              还没有发布版本。配置模型密钥后即可首次发布。
-            </div>
-            <div v-for="v in versions" :key="v.version" class="version-row">
-              <div>
-                <strong>v{{ v.version }}</strong
-                ><span
-                  v-if="v.version === selected.active_version"
-                  class="badge green"
-                  >当前线上</span
-                >
-                <p class="muted small">
-                  {{ time(v.created_at) }} · {{ v.author }} · 阈值
-                  {{ v.config.threshold }} · {{ v.config.model }}
-                </p>
-              </div>
-              <div class="row">
-                <button @click="compareVersion = v">查看差异</button
-                ><button
-                  @click="rollback(v)"
-                  :disabled="busy || v.version === selected.active_version"
-                >
-                  恢复并发布
-                </button>
-              </div>
-            </div>
-          </section>
+          <PolicyEditor
+            :key="selected.id"
+            v-model="config"
+            v-model:name="policyName"
+            :policy="selected"
+            :channels="channels"
+            :busy="busy"
+            @models="navigate('channels')"
+            @error="error = $event"
+          />
           <footer class="save-bar">
             <div>
               <span class="status-dot" :class="{ unsaved: dirty }"></span
-              >{{ dirty ? "有未保存的更改" : "草稿已保存"
-              }}<small>发布后影响后续正式请求</small>
+              >{{ dirty ? "有未保存的修改" : "已保存"
+              }}<small>保存后影响后续请求；启停前请先保存修改</small>
             </div>
-            <div class="row">
-              <button @click="saveDraft" :disabled="busy || !dirty">
-                保存草稿</button
-              ><button
-                class="primary"
-                @click="publish"
-                :disabled="busy || !credentialReady"
-              >
-                {{ dirty ? "保存并发布" : "发布配置" }}
-              </button>
-            </div>
+            <button
+              class="primary"
+              @click="saveCurrent"
+              :disabled="busy || !dirty"
+            >
+              保存并生效
+            </button>
           </footer>
         </template>
+        <ChannelPanel
+          v-if="page === 'channels'"
+          :channels="channels"
+          :credentials="credentials"
+          @changed="reloadChannels"
+          @credentials="navigate('credentials')"
+          @error="error = $event"
+        />
 
         <BillingPanel
           v-if="page === 'billing'"
@@ -1087,18 +601,14 @@ window.addEventListener("beforeunload", (e) => {
                 ></span
               >
             </div>
-            <div v-for="p in policies" :key="p.id" class="version-row">
+            <div v-for="p in policies" :key="p.id" class="record-row">
               <div>
                 <strong>{{ p.name }}</strong>
                 <p class="muted small">{{ p.alias }}</p>
               </div>
-              <span
-                class="badge"
-                :class="p.enabled && p.active_version ? 'green' : 'gray'"
-                >{{
-                  p.active_version ? `发布版本 v${p.active_version}` : "待发布"
-                }}</span
-              >
+              <span class="badge" :class="p.enabled ? 'green' : 'gray'">{{
+                p.enabled ? "已启用" : "已停用"
+              }}</span>
             </div>
             <p v-if="!overview.requests" class="empty">
               暂无正式审核请求。可以先到审核策略页面试跑。
@@ -1126,19 +636,33 @@ window.addEventListener("beforeunload", (e) => {
                           : ''
                     "
                   >
-                    <option value="deepseek">DeepSeek 官方 API</option>
+                    <option value="deepseek">DeepSeek（官方 / 第三方）</option>
                     <option value="grok_via_sub2api">Grok · sub2api API</option>
                   </select></label
-                ><label v-if="credentialProvider === 'grok_via_sub2api'"
-                  >sub2api 服务根地址<input
+                ><label
+                  >{{
+                    credentialProvider === "deepseek"
+                      ? "DeepSeek API 地址"
+                      : "sub2api 服务根地址"
+                  }}<input
                     v-model="credentialBaseURL"
                     type="url"
                     required
                     :readonly="!!credentialEditID"
-                    placeholder="https://sub2api.example.com"
+                    :placeholder="
+                      credentialProvider === 'deepseek'
+                        ? 'https://api.deepseek.com 或 https://api.example.com/v1'
+                        : 'https://sub2api.example.com'
+                    "
                   /><small class="muted"
-                    >审核系统的 AUDIT_SUB2API_ORIGINS 需允许此地址，sub2api
-                    无需新增配置。凭证保存后地址固定，换地址请新建连接。</small
+                    ><template v-if="credentialProvider === 'deepseek'"
+                      >支持官方地址或兼容 Chat Completions 的第三方 HTTP(S)
+                      接口。第三方地址可填根地址或 /v1，系统自动调用
+                      /v1/chat/completions。</template
+                    ><template v-else
+                      >审核系统的 AUDIT_SUB2API_ORIGINS 需允许此地址，sub2api
+                      无需新增配置。</template
+                    >凭证保存后地址固定，换地址请新建连接。</small
                   ></label
                 >
                 <label
@@ -1334,7 +858,7 @@ window.addEventListener("beforeunload", (e) => {
                 <thead>
                   <tr>
                     <th>时间 / 来源</th>
-                    <th>策略 / 版本</th>
+                    <th>策略 / 调用次数</th>
                     <th>判定</th>
                     <th>评分</th>
                     <th>原因</th>
@@ -1355,7 +879,7 @@ window.addEventListener("beforeunload", (e) => {
                     <td>
                       {{ policyLabel(l.policy_id)
                       }}<small>{{
-                        l.policy_version ? `v${l.policy_version}` : "草稿"
+                        `${l.model} · ${l.attempt_count} 次调用`
                       }}</small>
                     </td>
                     <td>
@@ -1374,7 +898,13 @@ window.addEventListener("beforeunload", (e) => {
                         l.confidence === null ? "—" : l.confidence.toFixed(2)
                       }}
                     </td>
-                    <td>{{ l.error_code || l.reason || "—" }}</td>
+                    <td>
+                      {{
+                        l.error_code
+                          ? auditError(l.error_code, l.error_message)
+                          : l.reason || "—"
+                      }}
+                    </td>
                     <td>{{ l.latency_ms }} ms</td>
                     <td>
                       <button class="text-button" @click="openLog(l.id)">
@@ -1442,7 +972,7 @@ window.addEventListener("beforeunload", (e) => {
               <h2>管理操作记录</h2>
               <span class="muted small">最近 100 条</span>
             </div>
-            <div v-for="(a, i) in actions" :key="i" class="version-row">
+            <div v-for="(a, i) in actions" :key="i" class="record-row">
               <div>
                 <strong>{{ a.action }}</strong>
                 <p class="muted small">
@@ -1484,49 +1014,8 @@ window.addEventListener("beforeunload", (e) => {
               复制：{{ p.name }}
             </option>
           </select></label
-        ><button class="primary" :disabled="busy">创建草稿</button>
+        ><button class="primary" :disabled="busy">创建策略</button>
       </form>
-    </section>
-  </div>
-  <div
-    v-if="compareVersion && config"
-    class="modal-backdrop"
-    @click.self="compareVersion = null"
-  >
-    <section
-      class="modal wide"
-      role="dialog"
-      aria-modal="true"
-      aria-label="版本比较"
-    >
-      <div class="panel-heading">
-        <h2>历史 v{{ compareVersion.version }} 与当前草稿</h2>
-        <button @click="compareVersion = null" aria-label="关闭">×</button>
-      </div>
-      <div class="compare-grid">
-        <div>
-          <h3>历史版本 · 阈值 {{ compareVersion.config.threshold }}</h3>
-          <p class="muted small">
-            {{ compareVersion.config.model }} ·
-            {{ compareVersion.config.timeout_ms }} ms
-          </p>
-          <pre>{{ compareVersion.config.prompt }}</pre>
-        </div>
-        <div>
-          <h3>当前草稿 · 阈值 {{ config.threshold }}</h3>
-          <p class="muted small">
-            {{ config.model }} · {{ config.timeout_ms }} ms
-          </p>
-          <pre>{{ config.prompt }}</pre>
-        </div>
-      </div>
-      <button
-        class="primary"
-        @click="rollback(compareVersion)"
-        :disabled="busy"
-      >
-        恢复此版本并发布
-      </button>
     </section>
   </div>
   <div v-if="detail" class="modal-backdrop" @click.self="detail = null">
@@ -1546,7 +1035,7 @@ window.addEventListener("beforeunload", (e) => {
         <dt>策略</dt>
         <dd>
           {{ policyLabel(detail.policy_id) }} ·
-          {{ detail.policy_version ? `v${detail.policy_version}` : "草稿" }}
+          {{ `${detail.attempt_count} 次调用` }}
         </dd>
         <dt>模型</dt>
         <dd>
@@ -1574,7 +1063,21 @@ window.addEventListener("beforeunload", (e) => {
         <dt>评分 / 阈值</dt>
         <dd>{{ detail.confidence ?? "—" }} / {{ detail.threshold }}</dd>
         <dt>原因或错误</dt>
-        <dd>{{ detail.error_code || detail.reason || "—" }}</dd>
+        <dd>
+          {{
+            detail.error_code
+              ? auditError(detail.error_code, detail.error_message)
+              : detail.reason || "—"
+          }}
+          <small v-if="detail.error_code" class="muted error-code"
+            >错误码：{{ detail.error_code }}</small
+          >
+          <small
+            v-if="detail.error_code && !detail.error_message"
+            class="muted error-code"
+            >此记录未保存具体错误消息；可查看下方当时保存的模型返回。</small
+          >
+        </dd>
         <dt>耗时 / Tokens</dt>
         <dd>
           {{ detail.latency_ms }} ms /
@@ -1583,19 +1086,25 @@ window.addEventListener("beforeunload", (e) => {
             <small class="muted">
               （输入 {{ detail.usage.prompt_tokens }} · 输出
               {{ detail.usage.completion_tokens
-              }}<template v-if="detail.usage.reasoning_tokens"
-                > · 推理 {{ detail.usage.reasoning_tokens }}</template
+              }}<template v-if="detail.usage.reasoning_tokens">
+                · 推理 {{ detail.usage.reasoning_tokens }}</template
               >）
             </small>
           </template>
           <template v-else>用量未返回</template>
         </dd>
       </dl>
-      <h3>模型返回</h3>
-      <pre v-if="detailModelOutput" class="input-detail">{{
-        detailModelOutput
-      }}</pre>
-      <p v-else class="hint">此请求没有保存模型返回内容。</p>
+      <AttemptList :attempts="detail.attempts || []" />
+      <template v-if="showStandaloneOutput">
+        <h3>模型返回</h3>
+        <p v-if="detail.error_code && detailModelOutput" class="hint">
+          以下为当时保存的模型原始输出（已脱敏）。审核失败时，原始评分不作为有效判定。
+        </p>
+        <pre v-if="detailModelOutput" class="input-detail">{{
+          detailModelOutput
+        }}</pre>
+        <p v-else class="hint">此请求没有保存模型返回内容。</p>
+      </template>
       <h3>审核输入</h3>
       <pre v-if="detail.input_stored" class="input-detail">{{
         detail.input

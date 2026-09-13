@@ -30,8 +30,8 @@ func validateProviderURL(provider, base string) error {
 	}
 	switch provider {
 	case ProviderDeepSeek:
-		if u.Scheme != "https" || u.Host != "api.deepseek.com" {
-			return errors.New("DeepSeek 地址必须为 https://api.deepseek.com")
+		if u.Scheme != "https" && u.Scheme != "http" {
+			return errors.New("DeepSeek 连接只支持 HTTP(S)")
 		}
 	case ProviderGrok:
 		if u.Scheme != "https" && u.Scheme != "http" {
@@ -60,7 +60,16 @@ func (c PolicyConfig) inferenceURL() string {
 	if c.ProviderID() == ProviderGrok {
 		return providerRoot(c.BaseURL) + "/v1/responses"
 	}
-	return strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
+	root := providerRoot(c.BaseURL)
+	if root == "https://api.deepseek.com" {
+		return root + "/chat/completions"
+	}
+	return root + "/v1/chat/completions"
+}
+
+// Third-party gateways can charge different rates for the same model name.
+func (c PolicyConfig) officialPricing() bool {
+	return c.ProviderID() == ProviderDeepSeek && providerRoot(c.BaseURL) == "https://api.deepseek.com"
 }
 func (c PolicyConfig) providerLabel() string {
 	if c.ProviderID() == ProviderGrok {
@@ -117,7 +126,7 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, "", problem(503, "upstream_unavailable", cfg.providerLabel()+" 请求失败，请检查连接、密钥和额度")
+		return Assessment{}, attempt, "", classifyUpstream(res)
 	}
 	content, env, err := readGrokResponse(res)
 	usage := parseGrokUsage(env.Usage)
@@ -324,7 +333,7 @@ func grokMessageText(env grokResponse) (string, bool) {
 	return text, false
 }
 
-// Model listing is an optional connection check. Inference and publication
+// Model listing is an optional connection check. Inference and configuration saves
 // do not depend on it, since some compatible gateways expose only chat.
 // validateProviderURL still enforces AUDIT_SUB2API_ORIGINS before credentials
 // are sent to the configured origin.

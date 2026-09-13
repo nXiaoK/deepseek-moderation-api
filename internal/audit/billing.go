@@ -14,9 +14,9 @@ import (
 )
 
 type CostReservation struct {
+	GatewayManaged               bool
 	Provider                     string
 	ID, ClientID, Kind, PolicyID string
-	PolicyVersion                int
 	Model                        string
 	Price                        *PriceCard
 	StartedAt                    time.Time
@@ -24,6 +24,8 @@ type CostReservation struct {
 	CacheHit                     bool
 }
 type CostRow struct {
+	ID        string     `json:"id"`
+	ChannelID string     `json:"channel_id"`
 	Price     *PriceCard `json:"price_snapshot,omitempty"`
 	RequestID string     `json:"request_id"`
 	ClientID  string     `json:"client_id"`
@@ -88,9 +90,13 @@ func (s *Store) Prices(ctx context.Context) ([]PriceCard, error) {
 	}
 	return items, rows.Err()
 }
-func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Policy, cfg PolicyConfig, version int, text string, cached bool, at time.Time) (*CostReservation, error) {
+func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Policy, cfg PolicyConfig, text string, cached bool, at time.Time, route ...string) (*CostReservation, error) {
+	requestID, channelID := id, ""
+	if len(route) == 2 {
+		requestID, channelID = route[0], route[1]
+	}
 	card, err := s.Price(ctx, cfg.Model, at)
-	if cfg.ProviderID() == ProviderGrok {
+	if !cfg.officialPricing() {
 		card = nil
 	}
 	if err != nil {
@@ -103,7 +109,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 			return nil, err
 		}
 	}
-	entry := &CostReservation{Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, PolicyVersion: version, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
+	entry := &CostReservation{GatewayManaged: !cfg.officialPricing(), Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -153,7 +159,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		status = "local_cache"
 		amount = int64(0)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(request_id,client_id,kind,policy_id,policy_version,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, id, client, kind, p.ID, version, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, at), cfg.ProviderID())
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider,channel_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, client, kind, p.ID, requestID, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, at), cfg.ProviderID(), channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +178,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 	} else if u.Attempted {
 		if entry.Price == nil {
 			status = "pending"
-			note = "模型单价未知，请核对供应商账单"
+			note = "模型单价未知或使用第三方接口，请核对供应商账单；不套用 DeepSeek 官方价格"
 			if entry.Provider == ProviderGrok {
 				note = "Grok 模型由 sub2api API 提供；未取得逐请求实际货币成本，不能按 DeepSeek 价格计算"
 			}
@@ -194,7 +200,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 		}
 	}
 	period := pricePeriod(entry.StartedAt)
-	if entry.Provider == ProviderGrok {
+	if entry.GatewayManaged {
 		period = "gateway_managed"
 	}
 	if u.Attempted && entry.Price != nil && pricePeriod(entry.StartedAt) != pricePeriod(end) {
@@ -211,7 +217,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 			return nil, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7 WHERE request_id=$6 AND status IN ('reserved','local_cache','pending')`, amountArg, status, string(raw), end, note, entry.ID, period)
+	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7 WHERE id=$6 AND status IN ('reserved','local_cache')`, amountArg, status, string(raw), end, note, entry.ID, period)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +231,7 @@ func (s *Store) Cost(ctx context.Context, id string) (*CostView, error) {
 	var amount, priceID sql.NullInt64
 	var reserved int64
 	var at time.Time
-	err := s.DB.QueryRowContext(ctx, "SELECT status,amount_pico,reserved_pico,price_id,started_at,note,tariff_period FROM audit_costs WHERE request_id=$1", id).Scan(&view.Status, &amount, &reserved, &priceID, &at, &view.Note, &view.Period)
+	err := s.DB.QueryRowContext(ctx, "SELECT status,amount_pico,reserved_pico,price_id,started_at,note,tariff_period FROM audit_costs WHERE id=$1", id).Scan(&view.Status, &amount, &reserved, &priceID, &at, &view.Note, &view.Period)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -439,7 +445,7 @@ func (s *Server) costs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	args = append(args, 20, (page-1)*20)
-	rows, err := s.Store.DB.QueryContext(r.Context(), `SELECT request_id,client_id,kind,policy_id,model,started_at,status,amount_pico,reserved_pico,price_id,usage,note,price_snapshot,tariff_period FROM audit_costs WHERE `+where+fmt.Sprintf(" ORDER BY started_at DESC,request_id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	rows, err := s.Store.DB.QueryContext(r.Context(), `SELECT id,request_id,channel_id,client_id,kind,policy_id,model,started_at,status,amount_pico,reserved_pico,price_id,usage,note,price_snapshot,tariff_period FROM audit_costs WHERE `+where+fmt.Sprintf(" ORDER BY started_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return err
 	}
@@ -450,7 +456,7 @@ func (s *Server) costs(w http.ResponseWriter, r *http.Request) error {
 		var amount, priceID sql.NullInt64
 		var reserved int64
 		var usage, snapshot []byte
-		if err = rows.Scan(&row.RequestID, &row.ClientID, &row.Kind, &row.PolicyID, &row.Model, &row.StartedAt, &row.Cost.Status, &amount, &reserved, &priceID, &usage, &row.Cost.Note, &snapshot, &row.Cost.Period); err != nil {
+		if err = rows.Scan(&row.ID, &row.RequestID, &row.ChannelID, &row.ClientID, &row.Kind, &row.PolicyID, &row.Model, &row.StartedAt, &row.Cost.Status, &amount, &reserved, &priceID, &usage, &row.Cost.Note, &snapshot, &row.Cost.Period); err != nil {
 			return err
 		}
 		row.Cost.AmountCNY = moneyPtr(amount)
@@ -497,7 +503,7 @@ func (s *Server) reconcileCost(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	err = s.Store.mutate(r.Context(), actor(r), "cost.reconcile", id, func(tx *sql.Tx) error {
 		var client, kind string
-		if err := tx.QueryRowContext(r.Context(), "SELECT client_id,kind FROM audit_costs WHERE request_id=$1", id).Scan(&client, &kind); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(r.Context(), "SELECT client_id,kind FROM audit_costs WHERE id=$1", id).Scan(&client, &kind); errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return err
@@ -509,16 +515,16 @@ func (s *Server) reconcileCost(w http.ResponseWriter, r *http.Request) error {
 		}
 		var status string
 		var before sql.NullInt64
-		if err := tx.QueryRowContext(r.Context(), "SELECT status,amount_pico FROM audit_costs WHERE request_id=$1 FOR UPDATE", id).Scan(&status, &before); err != nil {
+		if err := tx.QueryRowContext(r.Context(), "SELECT status,amount_pico FROM audit_costs WHERE id=$1 FOR UPDATE", id).Scan(&status, &before); err != nil {
 			return err
 		}
 		if status != "pending" && status != "estimated" {
 			return problem(409, "cost_already_settled", "仅待核对或估算记录可以核对")
 		}
-		if _, err := tx.ExecContext(r.Context(), "INSERT INTO cost_adjustments(request_id,previous_status,previous_amount,amount_pico,reason,author) VALUES($1,$2,$3,$4,$5,$6)", id, status, before, amount, in.Reason, actor(r)); err != nil {
+		if _, err := tx.ExecContext(r.Context(), "INSERT INTO cost_adjustments(cost_id,previous_status,previous_amount,amount_pico,reason,author) VALUES($1,$2,$3,$4,$5,$6)", id, status, before, amount, in.Reason, actor(r)); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(r.Context(), "UPDATE audit_costs SET status='reconciled',amount_pico=$1,note=$2,settled_at=NOW() WHERE request_id=$3", amount, "管理员核对："+in.Reason, id)
+		_, err := tx.ExecContext(r.Context(), "UPDATE audit_costs SET status='reconciled',amount_pico=$1,note=$2,settled_at=NOW() WHERE id=$3", amount, "管理员核对："+in.Reason, id)
 		return err
 	})
 	if err != nil {

@@ -83,8 +83,8 @@ func (s *Store) Bootstrap(ctx context.Context, username, password string) error 
 			return err
 		}
 	}
-	raw, _ := json.Marshal(DefaultConfig())
-	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_policies(id,name,alias,draft) VALUES('abuse-default','网络滥用与人身伤害审核','abuse-audit-v1',$1) ON CONFLICT DO NOTHING`, string(raw)); err != nil {
+	raw, _ := json.Marshal(DefaultSettings())
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_policies(id,name,alias,config) VALUES('abuse-default','网络滥用与人身伤害审核','abuse-audit-v1',$1) ON CONFLICT DO NOTHING`, string(raw)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -95,6 +95,13 @@ func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*s
 		return err
 	}
 	defer tx.Rollback()
+	// Configuration writes are rare. Serialize them to keep reference/credential
+	// locking order consistent across channel, policy and credential operations.
+	if strings.HasPrefix(action, "policy.") || strings.HasPrefix(action, "channel.") || strings.HasPrefix(action, "credential.") {
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274903)"); err != nil {
+			return err
+		}
+	}
 	if err = fn(tx); err != nil {
 		return err
 	}
@@ -103,20 +110,35 @@ func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*s
 	}
 	return tx.Commit()
 }
+
+type scanner interface{ Scan(...any) error }
+
+func scanPolicy(row scanner) (Policy, error) {
+	var p Policy
+	var raw []byte
+	err := row.Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.Revision, &raw, &p.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrNotFound
+	}
+	if err != nil {
+		return p, err
+	}
+	err = json.Unmarshal(raw, &p.Config)
+	return p, err
+}
+
+const policyColumns = "id,name,alias,enabled,revision,config,updated_at"
+
 func (s *Store) Policies(ctx context.Context) ([]Policy, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,alias,enabled,draft_revision,active_version,draft FROM audit_policies ORDER BY name,id`)
+	rows, err := s.DB.QueryContext(ctx, "SELECT "+policyColumns+" FROM audit_policies ORDER BY name,id")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := []Policy{}
 	for rows.Next() {
-		var p Policy
-		var raw []byte
-		if err = rows.Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.DraftRevision, &p.ActiveVersion, &raw); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(raw, &p.Draft); err != nil {
+		p, err := scanPolicy(rows)
+		if err != nil {
 			return nil, err
 		}
 		items = append(items, p)
@@ -124,66 +146,55 @@ func (s *Store) Policies(ctx context.Context) ([]Policy, error) {
 	return items, rows.Err()
 }
 func (s *Store) Policy(ctx context.Context, id string) (Policy, error) {
-	var p Policy
-	var draft, active []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT p.id,p.name,p.alias,p.enabled,p.draft_revision,p.active_version,p.draft,COALESCE(v.config,'null'::jsonb) FROM audit_policies p LEFT JOIN audit_policy_versions v ON p.id=v.policy_id AND p.active_version=v.version WHERE p.id=$1`, id).Scan(&p.ID, &p.Name, &p.Alias, &p.Enabled, &p.DraftRevision, &p.ActiveVersion, &draft, &active)
-	if errors.Is(err, sql.ErrNoRows) {
-		return p, ErrNotFound
-	}
-	if err != nil {
-		return p, err
-	}
-	if err = json.Unmarshal(draft, &p.Draft); err != nil {
-		return p, err
-	}
-	err = json.Unmarshal(active, &p.Active)
-	return p, err
+	return scanPolicy(s.DB.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE id=$1", id))
 }
 func (s *Store) PolicyByAlias(ctx context.Context, alias string) (Policy, error) {
-	var id string
-	err := s.DB.QueryRowContext(ctx, "SELECT id FROM audit_policies WHERE alias=$1", alias).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Policy{}, ErrNotFound
-	}
-	if err != nil {
-		return Policy{}, err
-	}
-	return s.Policy(ctx, id)
+	return scanPolicy(s.DB.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE alias=$1", alias))
 }
 func (s *Store) CreatePolicy(ctx context.Context, actor, name, alias, source string) (Policy, error) {
-	cfg := DefaultConfig()
+	cfg := DefaultSettings()
 	if source != "" {
 		p, err := s.Policy(ctx, source)
 		if err != nil {
 			return Policy{}, err
 		}
-		cfg = p.Draft
+		cfg = p.Config
 	}
 	id := randomToken("pol_")
 	raw, _ := json.Marshal(cfg)
 	err := s.mutate(ctx, actor, "policy.create", id, func(tx *sql.Tx) error {
-		var exists bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM audit_policies WHERE alias=$1)", alias).Scan(&exists); err != nil {
+		if err := validateBindings(ctx, tx, cfg, false); err != nil {
 			return err
 		}
-		if exists {
+		result, err := tx.ExecContext(ctx, "INSERT INTO audit_policies(id,name,alias,config) VALUES($1,$2,$3,$4) ON CONFLICT(alias) DO NOTHING", id, name, alias, string(raw))
+		if err != nil {
+			return err
+		}
+		n, _ := result.RowsAffected()
+		if n != 1 {
 			return problem(409, "alias_exists", "模型别名已存在")
 		}
-		_, err := tx.ExecContext(ctx, "INSERT INTO audit_policies(id,name,alias,draft) VALUES($1,$2,$3,$4)", id, name, alias, string(raw))
-		return err
+		return nil
 	})
 	if err != nil {
 		return Policy{}, err
 	}
 	return s.Policy(ctx, id)
 }
-func (s *Store) SaveDraft(ctx context.Context, actor, id, name string, revision int64, cfg PolicyConfig) error {
+func (s *Store) SaveConfig(ctx context.Context, actor, id, name string, revision int64, cfg PolicySettings) error {
 	if err := cfg.Validate(); err != nil {
 		return problem(400, "invalid_config", err.Error())
 	}
 	raw, _ := json.Marshal(cfg)
-	return s.mutate(ctx, actor, "policy.save_draft", id, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, "UPDATE audit_policies SET name=$1,draft=$2,draft_revision=draft_revision+1 WHERE id=$3 AND draft_revision=$4", name, string(raw), id, revision)
+	return s.mutate(ctx, actor, "policy.save", id, func(tx *sql.Tx) error {
+		var enabled bool
+		if err := tx.QueryRowContext(ctx, "SELECT enabled FROM audit_policies WHERE id=$1 FOR UPDATE", id).Scan(&enabled); err != nil {
+			return err
+		}
+		if err := validateBindings(ctx, tx, cfg, enabled); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, "UPDATE audit_policies SET name=$1,config=$2,revision=revision+1,updated_at=NOW() WHERE id=$3 AND revision=$4", name, string(raw), id, revision)
 		if err != nil {
 			return err
 		}
@@ -194,77 +205,23 @@ func (s *Store) SaveDraft(ctx context.Context, actor, id, name string, revision 
 		return nil
 	})
 }
-func (s *Store) Publish(ctx context.Context, actor, id string, revision int64, rollback int) (int, error) {
-	version := 0
-	err := s.mutate(ctx, actor, "policy.publish", id, func(tx *sql.Tx) error {
-		var raw []byte
-		var current int64
-		err := tx.QueryRowContext(ctx, "SELECT draft,draft_revision,active_version FROM audit_policies WHERE id=$1 FOR UPDATE", id).Scan(&raw, &current, &version)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+func (s *Store) SetPolicyState(ctx context.Context, actor, id string, revision int64, enabled bool) error {
+	return s.mutate(ctx, actor, "policy.state", id, func(tx *sql.Tx) error {
+		p, err := scanPolicy(tx.QueryRowContext(ctx, "SELECT "+policyColumns+" FROM audit_policies WHERE id=$1 FOR UPDATE", id))
 		if err != nil {
 			return err
 		}
-		if revision != current {
+		if p.Revision != revision {
 			return ErrConflict
 		}
-		if rollback > 0 {
-			err = tx.QueryRowContext(ctx, "SELECT config FROM audit_policy_versions WHERE policy_id=$1 AND version=$2", id, rollback).Scan(&raw)
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			if err != nil {
+		if enabled {
+			if err := validateBindings(ctx, tx, p.Config, true); err != nil {
 				return err
 			}
 		}
-		var cfg PolicyConfig
-		if err = json.Unmarshal(raw, &cfg); err != nil {
-			return err
-		}
-		if err = cfg.Validate(); err != nil {
-			return problem(400, "invalid_config", err.Error())
-		}
-		var active bool
-		var provider, baseURL string
-		err = tx.QueryRowContext(ctx, "SELECT active,provider,base_url FROM provider_credentials WHERE id=$1 FOR SHARE", cfg.CredentialID).Scan(&active, &provider, &baseURL)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
-			return problem(400, "credential_required", "请先选择有效的模型连接密钥")
-		}
-		if err != nil {
-			return err
-		}
-		if provider != cfg.ProviderID() || providerRoot(baseURL) != providerRoot(cfg.BaseURL) {
-			return problem(400, "credential_provider_mismatch", "密钥与审核供应商或地址不匹配")
-		}
-		version++
-		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_policy_versions(policy_id,version,config,author) VALUES($1,$2,$3,$4)", id, version, string(raw), actor); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE audit_policies SET active_version=$1,draft=$2,draft_revision=draft_revision+1 WHERE id=$3", version, string(raw), id)
+		_, err = tx.ExecContext(ctx, "UPDATE audit_policies SET enabled=$1,revision=revision+1,updated_at=NOW() WHERE id=$2", enabled, id)
 		return err
 	})
-	return version, err
-}
-func (s *Store) Versions(ctx context.Context, id string) ([]Version, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT version,config,created_at,author FROM audit_policy_versions WHERE policy_id=$1 ORDER BY version DESC LIMIT 100", id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Version{}
-	for rows.Next() {
-		var v Version
-		var raw []byte
-		if err = rows.Scan(&v.Version, &raw, &v.CreatedAt, &v.Author); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(raw, &v.Config); err != nil {
-			return nil, err
-		}
-		items = append(items, v)
-	}
-	return items, rows.Err()
 }
 func (s *Store) Credentials(ctx context.Context) ([]Credential, error) {
 	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,masked,active,provider,base_url FROM provider_credentials ORDER BY name,id")
@@ -336,7 +293,8 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 		if n != 1 {
 			return ErrNotFound
 		}
-		return nil
+		_, err = tx.ExecContext(ctx, "UPDATE audit_model_channels SET revision=revision+1,cache_epoch=$1 WHERE credential_id=$2", randomToken("cache_"), id)
+		return err
 	})
 	return id, err
 }
@@ -487,9 +445,22 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		}
 		l.CreatedAt = created
 		l.ModelOutput = ""
+		for i := range l.Attempts {
+			l.Attempts[i].ModelOutput = ""
+		}
 		logs = append(logs, l)
 	}
-	return logs, count, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rows.Close()
+	for i := range logs {
+		logs[i].Cost, err = s.requestCost(ctx, logs[i].ID)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	return logs, count, nil
 }
 func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
 	var raw, cipher []byte
@@ -509,7 +480,20 @@ func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
 	if len(cipher) > 0 {
 		l.Input, err = s.Vault.Open(cipher, "input:"+id)
 	}
-	return l, err
+	if err != nil {
+		return l, err
+	}
+	l.Cost, err = s.requestCost(ctx, id)
+	if err != nil {
+		return l, err
+	}
+	for i := range l.Attempts {
+		l.Attempts[i].Cost, err = s.Cost(ctx, l.Attempts[i].ID)
+		if err != nil {
+			return l, err
+		}
+	}
+	return l, nil
 }
 func (s *Store) Overview(ctx context.Context) (map[string]any, error) {
 	var count, hits, fail, tokens int64

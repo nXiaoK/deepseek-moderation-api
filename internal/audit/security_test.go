@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAssessmentContract(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"confidence":null,"reason":""}`, `{"confidence":true,"reason":""}`, `{"confidence":"0.8","reason":""}`, `{"confidence":1.1,"reason":""}`, `{"confidence":-0.01,"reason":""}`, `{"confidence":0.1,"reason":null}`, `{"confidence":0.1,"reason":"","confidence":0.9}`, `{"confidence":0.1,"reason":"","flagged":true}`, `{"confidence":0.1,"reason":""} {}`, "```json\n{}\n```", `{"confidence":0.1,"reason":"这是一段超过二十个字符且不符合输出协议的原因说明"}`} {
+	for _, raw := range []string{`{}`, `{"confidence":null,"reason":""}`, `{"confidence":true,"reason":""}`, `{"confidence":"0.8","reason":""}`, `{"confidence":1.1,"reason":""}`, `{"confidence":-0.01,"reason":""}`, `{"confidence":0.1,"reason":null}`, `{"confidence":0.1,"reason":"","confidence":0.9}`, `{"confidence":0.1,"reason":"","flagged":true}`, `{"confidence":0.1,"reason":""} {}`, "```json\n{}\n```"} {
 		t.Run(raw, func(t *testing.T) {
 			if _, err := ParseAssessment([]byte(raw)); err == nil {
 				t.Fatalf("accepted invalid model output: %s", raw)
@@ -21,10 +23,24 @@ func TestAssessmentContract(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	long := `{"confidence":0.95,"reason":"针对他人网站绕过Cloudflare/WAF/反爬批量抓取"}`
-	if _, err := ParseAssessment([]byte(long)); err == nil || err.Error() != "reason 为 29 字，超过 20 字上限" {
+	for _, reason := range []string{strings.Repeat("审", 31), strings.Repeat("审", 80), strings.Repeat("🙂", 80), "针对他人网站绕过Cloudflare/WAF/反爬批量抓取"} {
+		raw, _ := json.Marshal(Assessment{.95, reason})
+		got, err := ParseAssessment(raw)
+		if err != nil || got.Reason != reason {
+			t.Fatalf("long reason was rejected or changed: %v", err)
+		}
+	}
+	raw, _ := json.Marshal(Assessment{.95, strings.Repeat("审", 81)})
+	if _, err := ParseAssessment(raw); err == nil || err.Error() != "reason 为 81 字，超过 80 字上限" {
 		t.Fatal(err)
 	}
+	// Short secrets can expand under redaction, but must stay client-compatible.
+	reason := strings.Repeat("审", 71) + " a@b.co"
+	got := redactReason(reason)
+	if utf8.RuneCountInString(got) > 80 || strings.Contains(got, "a@b.co") {
+		t.Fatal("redaction broke reason contract", got)
+	}
+
 }
 func TestStoredModelOutputRedactsSecrets(t *testing.T) {
 	got := storedModelOutput(`{"reason":"use sk-abc123xyz"}`)

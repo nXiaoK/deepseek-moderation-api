@@ -57,21 +57,102 @@ func (c PolicyConfig) Validate() error {
 	return nil
 }
 
+// Policy stores only the current settings. Revision is an optimistic lock and
+// the positive policy_version required by the existing sub2api wire contract.
 type Policy struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Alias         string        `json:"alias"`
-	Enabled       bool          `json:"enabled"`
-	DraftRevision int64         `json:"draft_revision"`
-	ActiveVersion int           `json:"active_version"`
-	Draft         PolicyConfig  `json:"draft"`
-	Active        *PolicyConfig `json:"active,omitempty"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Alias     string         `json:"alias"`
+	Enabled   bool           `json:"enabled"`
+	Revision  int64          `json:"revision"`
+	Config    PolicySettings `json:"config"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
-type Version struct {
-	Version   int          `json:"version"`
-	Config    PolicyConfig `json:"config"`
-	CreatedAt time.Time    `json:"created_at"`
-	Author    string       `json:"author"`
+type ChannelBinding struct {
+	ChannelID string `json:"channel_id"`
+	Priority  int    `json:"priority"`
+	Weight    int    `json:"weight"`
+	Enabled   bool   `json:"enabled"`
+}
+type PolicySettings struct {
+	Prompt         string           `json:"prompt"`
+	Threshold      float64          `json:"threshold"`
+	ResultCacheTTL int              `json:"result_cache_ttl_seconds"`
+	StoreInput     bool             `json:"store_input"`
+	RetentionDays  int              `json:"retention_days"`
+	TotalTimeoutMS int              `json:"total_timeout_ms"`
+	MaxAttempts    int              `json:"max_attempts"`
+	Channels       []ChannelBinding `json:"channels"`
+}
+
+func DefaultSettings() PolicySettings {
+	return PolicySettings{Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, Channels: []ChannelBinding{}}
+}
+func (c PolicySettings) Validate() error {
+	if c.Channels == nil {
+		return errors.New("channels 必须为数组，可为空数组")
+	}
+	cfg := DefaultConfig()
+	cfg.Prompt, cfg.Threshold, cfg.ResultCacheTTL = c.Prompt, c.Threshold, c.ResultCacheTTL
+	cfg.StoreInput, cfg.RetentionDays = c.StoreInput, c.RetentionDays
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if c.TotalTimeoutMS < 1000 || c.TotalTimeoutMS > 25000 {
+		return errors.New("总调用时限必须为 1000～25000 ms")
+	}
+	if c.MaxAttempts < 1 || c.MaxAttempts > 5 {
+		return errors.New("最多调用次数必须为 1～5 次，包含首次调用")
+	}
+	if len(c.Channels) > 100 {
+		return errors.New("每个策略最多绑定 100 个模型通道")
+	}
+	seen := map[string]bool{}
+	for _, b := range c.Channels {
+		if b.ChannelID == "" || seen[b.ChannelID] || b.Priority < 1 || b.Priority > 100 || b.Weight < 1 || b.Weight > 1000 {
+			return errors.New("通道不能重复，优先级必须为 1～100，权重必须为 1～1000")
+		}
+		seen[b.ChannelID] = true
+	}
+	return nil
+}
+
+type ModelChannel struct {
+	ID               string        `json:"id"`
+	Name             string        `json:"name"`
+	Provider         string        `json:"provider"`
+	BaseURL          string        `json:"base_url"`
+	Model            string        `json:"model"`
+	CredentialID     string        `json:"credential_id"`
+	CredentialActive bool          `json:"credential_active"`
+	TimeoutMS        int           `json:"timeout_ms"`
+	MaxTokens        int           `json:"max_tokens"`
+	MaxConcurrency   int           `json:"max_concurrency"`
+	Enabled          bool          `json:"enabled"`
+	Revision         int64         `json:"revision"`
+	CacheEpoch       string        `json:"-"`
+	PolicyNames      []string      `json:"policy_names"`
+	Health           ChannelHealth `json:"health"`
+}
+
+func (c ModelChannel) Inference(r PolicySettings) PolicyConfig {
+	return PolicyConfig{Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
+}
+
+type AuditAttempt struct {
+	ErrorMessage string    `json:"error_message,omitempty"`
+	ModelOutput  string    `json:"model_output,omitempty"`
+	ID           string    `json:"id"`
+	ChannelID    string    `json:"channel_id"`
+	ChannelName  string    `json:"channel_name"`
+	Provider     string    `json:"provider"`
+	Model        string    `json:"model"`
+	ErrorCode    string    `json:"error_code"`
+	LatencyMS    int64     `json:"latency_ms"`
+	CacheHit     bool      `json:"cache_hit"`
+	Sent         bool      `json:"sent"`
+	Usage        Usage     `json:"usage"`
+	Cost         *CostView `json:"cost,omitempty"`
 }
 type Credential struct {
 	Provider string `json:"provider"`
@@ -121,37 +202,44 @@ type Usage struct {
 	Attempted         bool   `json:"-"`
 }
 type Response struct {
-	Provider  string    `json:"provider"`
-	CacheHit  bool      `json:"cache_hit"`
-	Cost      *CostView `json:"cost,omitempty"`
-	ID        string    `json:"id"`
-	Model     string    `json:"model"`
-	Results   []Result  `json:"results"`
-	Usage     Usage     `json:"usage"`
-	LatencyMS int64     `json:"latency_ms"`
+	ChannelID    string         `json:"channel_id"`
+	ActualModel  string         `json:"actual_model"`
+	AttemptCount int            `json:"attempt_count"`
+	Attempts     []AuditAttempt `json:"attempts,omitempty"`
+	Provider     string         `json:"provider"`
+	CacheHit     bool           `json:"cache_hit"`
+	Cost         *CostView      `json:"cost,omitempty"`
+	ID           string         `json:"id"`
+	Model        string         `json:"model"`
+	Results      []Result       `json:"results"`
+	Usage        Usage          `json:"usage"`
+	LatencyMS    int64          `json:"latency_ms"`
 }
 type AuditLog struct {
-	Provider          string    `json:"provider"`
-	UpstreamRequestID string    `json:"upstream_request_id,omitempty"`
-	CacheHit          bool      `json:"cache_hit"`
-	Cost              *CostView `json:"cost,omitempty"`
-	ID                string    `json:"id"`
-	Kind              string    `json:"kind"`
-	PolicyID          string    `json:"policy_id"`
-	PolicyVersion     int       `json:"policy_version"`
-	ClientID          string    `json:"client_id"`
-	Model             string    `json:"model"`
-	Flagged           bool      `json:"flagged"`
-	Confidence        *float64  `json:"confidence"`
-	Threshold         float64   `json:"threshold"`
-	Reason            string    `json:"reason"`
-	ModelOutput       string    `json:"model_output,omitempty"`
-	ErrorCode         string    `json:"error_code"`
-	LatencyMS         int64     `json:"latency_ms"`
-	Usage             Usage     `json:"usage"`
-	InputStored       bool      `json:"input_stored"`
-	Input             string    `json:"input,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	ErrorMessage      string         `json:"error_message,omitempty"`
+	ChannelID         string         `json:"channel_id"`
+	Attempts          []AuditAttempt `json:"attempts"`
+	AttemptCount      int            `json:"attempt_count"`
+	Provider          string         `json:"provider"`
+	UpstreamRequestID string         `json:"upstream_request_id,omitempty"`
+	CacheHit          bool           `json:"cache_hit"`
+	Cost              *CostView      `json:"cost,omitempty"`
+	ID                string         `json:"id"`
+	Kind              string         `json:"kind"`
+	PolicyID          string         `json:"policy_id"`
+	ClientID          string         `json:"client_id"`
+	Model             string         `json:"model"`
+	Flagged           bool           `json:"flagged"`
+	Confidence        *float64       `json:"confidence"`
+	Threshold         float64        `json:"threshold"`
+	Reason            string         `json:"reason"`
+	ModelOutput       string         `json:"model_output,omitempty"`
+	ErrorCode         string         `json:"error_code"`
+	LatencyMS         int64          `json:"latency_ms"`
+	Usage             Usage          `json:"usage"`
+	InputStored       bool           `json:"input_stored"`
+	Input             string         `json:"input,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
 }
 type LogFilter struct {
 	Page, PageSize                             int

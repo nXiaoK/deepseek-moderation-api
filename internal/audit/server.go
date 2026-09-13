@@ -75,13 +75,15 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/policies", s.listPolicies)
 	admin("POST /admin/policies", s.createPolicy)
 	admin("GET /admin/policies/{id}", s.getPolicy)
-	admin("PUT /admin/policies/{id}/draft", s.saveDraft)
+	admin("PUT /admin/policies/{id}/config", s.saveConfig)
 	admin("PUT /admin/policies/{id}/state", s.policyState)
-	admin("POST /admin/policies/{id}/publish", s.publish)
-	admin("POST /admin/policies/{id}/rollback", s.publish)
-	admin("GET /admin/policies/{id}/versions", s.versions)
 	admin("POST /admin/policies/{id}/test", s.testPolicy)
 	admin("POST /admin/connections/probe", s.probeConnection)
+	admin("GET /admin/model-channels", s.channels)
+	admin("POST /admin/model-channels", s.saveChannel)
+	admin("PUT /admin/model-channels/{id}", s.saveChannel)
+	admin("DELETE /admin/model-channels/{id}", s.deleteChannel)
+	admin("POST /admin/model-channels/{id}/cache/clear", s.clearChannelCache)
 	admin("GET /admin/credentials", s.credentials)
 	admin("POST /admin/credentials", s.saveCredential)
 	admin("PUT /admin/credentials/{id}", s.saveCredential)
@@ -299,11 +301,11 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) error {
 	}
 	return writeJSON(w, 201, p)
 }
-func (s *Server) saveDraft(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Revision int64        `json:"expected_revision"`
-		Name     string       `json:"name"`
-		Config   PolicyConfig `json:"config"`
+		Revision int64          `json:"expected_revision"`
+		Name     string         `json:"name"`
+		Config   PolicySettings `json:"config"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -311,14 +313,15 @@ func (s *Server) saveDraft(w http.ResponseWriter, r *http.Request) error {
 	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 {
 		return problem(400, "invalid_name", "策略名称不能为空且最多 200 字节")
 	}
-	if err := s.Store.SaveDraft(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Revision, in.Config); err != nil {
+	if err := s.Store.SaveConfig(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Revision, in.Config); err != nil {
 		return err
 	}
 	return s.getPolicy(w, r)
 }
 func (s *Server) policyState(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Enabled *bool `json:"enabled"`
+		Enabled  *bool `json:"enabled"`
+		Revision int64 `json:"expected_revision"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -326,59 +329,21 @@ func (s *Server) policyState(w http.ResponseWriter, r *http.Request) error {
 	if in.Enabled == nil {
 		return problem(400, "invalid_state", "enabled 必须为布尔值")
 	}
-	id := r.PathValue("id")
-	err := s.Store.mutate(r.Context(), actor(r), "policy.state", id, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(r.Context(), "UPDATE audit_policies SET enabled=$1 WHERE id=$2", *in.Enabled, id)
-		if err != nil {
-			return err
-		}
-		n, _ := res.RowsAffected()
-		if n != 1 {
-			return ErrNotFound
-		}
-		return nil
-	})
-	if err != nil {
+	if err := s.Store.SetPolicyState(r.Context(), actor(r), r.PathValue("id"), in.Revision, *in.Enabled); err != nil {
 		return err
 	}
 	return s.getPolicy(w, r)
 }
-func (s *Server) publish(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		Revision int64 `json:"expected_revision"`
-		Version  int   `json:"version"`
-	}
-	if err := readJSON(w, r, &in); err != nil {
-		return err
-	}
-	rollback := strings.HasSuffix(r.URL.Path, "/rollback")
-	if rollback && in.Version < 1 || !rollback && in.Version != 0 {
-		return problem(400, "invalid_version", "版本参数无效")
-	}
-
-	version, err := s.Store.Publish(r.Context(), actor(r), r.PathValue("id"), in.Revision, in.Version)
-	if err != nil {
-		return err
-	}
-	return writeJSON(w, 200, map[string]int{"version": version})
-}
-func (s *Server) versions(w http.ResponseWriter, r *http.Request) error {
-	items, err := s.Store.Versions(r.Context(), r.PathValue("id"))
-	if err != nil {
-		return err
-	}
-	return writeJSON(w, 200, items)
-}
 func (s *Server) testPolicy(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Input    string `json:"input"`
-		Source   string `json:"source"`
-		Revision int64  `json:"expected_revision"`
+		Input     string          `json:"input"`
+		Config    *PolicySettings `json:"config"`
+		ChannelID string          `json:"channel_id"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
 	}
-	text, err := validateText(in.Input)
+	input, err := validateText(in.Input)
 	if err != nil {
 		return err
 	}
@@ -389,27 +354,12 @@ func (s *Server) testPolicy(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return problem(429, "rate_limited", "试跑次数过多")
 	}
-	p, err := s.Store.Policy(r.Context(), r.PathValue("id"))
+	p, channels, err := s.Store.RouteSnapshot(r.Context(), r.PathValue("id"), in.Config)
 	if err != nil {
 		return err
 	}
-	cfg := p.Draft
-	version := 0
-	switch in.Source {
-	case "draft":
-		if in.Revision != p.DraftRevision {
-			return ErrConflict
-		}
-	case "published":
-		if p.Active == nil {
-			return problem(400, "not_published", "该策略尚未发布")
-		}
-		cfg = *p.Active
-		version = p.ActiveVersion
-	default:
-		return problem(400, "invalid_source", "请选择草稿或已发布版本")
-	}
-	response, err := s.runAudit(r.Context(), p, cfg, version, actor(r), "test", text)
+	response, err := s.runAudit(r.Context(), p, channels, actor(r), "test", input, in.ChannelID)
+	w.Header().Set("X-Audit-Request-ID", response.ID)
 	if err != nil {
 		return err
 	}
@@ -510,15 +460,19 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	if !slices.Contains(k.PolicyIDs, p.ID) {
 		return problem(403, "policy_forbidden", "该密钥无权调用此策略")
 	}
-	if !p.Enabled || p.Active == nil {
-		return problem(503, "policy_unavailable", "审核策略已停用或尚未发布")
-	}
-	res, err := s.runAudit(r.Context(), p, *p.Active, p.ActiveVersion, k.ID, "production", text)
+	p, channels, err := s.Store.RouteSnapshot(r.Context(), p.ID, nil)
 	if err != nil {
 		return err
 	}
+	if !p.Enabled {
+		return problem(503, "policy_unavailable", "审核策略已停用")
+	}
+	res, err := s.runAudit(r.Context(), p, channels, k.ID, "production", text, "")
 	w.Header().Set("X-Audit-Request-ID", res.ID)
-	w.Header().Set("X-Audit-Policy-Version", strconv.Itoa(p.ActiveVersion))
+	if err != nil {
+		return err
+	}
+	w.Header().Set("X-Audit-Policy-Version", strconv.FormatInt(p.Revision, 10))
 	return writeJSON(w, 200, res)
 }
 func (s *Server) models(w http.ResponseWriter, r *http.Request) error {
@@ -532,7 +486,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) error {
 	}
 	items := []map[string]string{}
 	for _, p := range policies {
-		if p.Enabled && p.ActiveVersion > 0 && slices.Contains(k.PolicyIDs, p.ID) {
+		if p.Enabled && slices.Contains(k.PolicyIDs, p.ID) {
 			items = append(items, map[string]string{"id": p.Alias, "object": "model", "owned_by": "audit-service"})
 		}
 	}
@@ -614,6 +568,16 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 var secretPattern = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]+|bearer\s+[^\s]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b\d{11,}\b)`)
 
 func redact(s string) string { return secretPattern.ReplaceAllString(s, "[隐去]") }
+
+// Redaction can lengthen a short secret; keep the outgoing reason within the
+// client contract even after replacing secrets. Raw model output is separate.
+func redactReason(s string) string {
+	s = redact(s)
+	if utf8.RuneCountInString(s) > MaxReasonRunes {
+		return string([]rune(s)[:MaxReasonRunes-1]) + "…"
+	}
+	return s
+}
 func storedModelOutput(s string) string {
 	s = redact(s)
 	if n := utf8.RuneCountInString(s); n > 4096 {

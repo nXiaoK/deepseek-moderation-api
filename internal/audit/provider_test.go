@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func grokTestConfig() PolicyConfig {
@@ -133,8 +134,8 @@ func TestGrokURLsRequireExplicitOriginAndNoCrossProviderSecrets(t *testing.T) {
 		t.Fatal("double v1")
 	}
 	cfg.Provider = ProviderDeepSeek
-	if cfg.Validate() == nil {
-		t.Fatal("DeepSeek credential would reach sub2api")
+	if err := cfg.Validate(); err != nil {
+		t.Fatal("DeepSeek third-party endpoint rejected", err)
 	}
 }
 func TestGrokRequestUsesOrdinaryAPIKeyAndStreamingResponses(t *testing.T) {
@@ -238,7 +239,10 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.SaveDraft(ctx, "admin", p.ID, p.Name, p.DraftRevision, cfg); err != nil {
+	c := createTestChannel(t, store, cred, "grok", cfg.Model)
+	p.Config.Channels = []ChannelBinding{{c.ID, 1, 100, true}}
+	p.Config.ResultCacheTTL = 60
+	if err = store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = store.Policy(ctx, p.ID)
@@ -261,7 +265,7 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 		return &http.Response{StatusCode: code, Header: headers, Body: io.NopCloser(bytes.NewReader(raw))}, nil
 	})}
 
-	if _, err = store.Publish(ctx, "admin", p.ID, p.DraftRevision, 0); err != nil {
+	if err = store.SetPolicyState(ctx, "admin", p.ID, p.Revision, true); err != nil {
 		t.Fatal(err)
 	}
 	p, _ = store.Policy(ctx, p.ID)
@@ -270,18 +274,18 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, _ := store.AuthenticateKey(ctx, token)
-	res, err := app.runAudit(ctx, p, *p.Active, p.ActiveVersion, key.ID, "production", "hello")
-	if err != nil || res.Provider != ProviderGrok || res.Cost.AmountCNY != nil || res.Cost.Period != "gateway_managed" {
+	res, err := runTestAudit(t, app, p, key.ID, "production", "hello")
+	if err != nil || res.Provider != ProviderGrok || res.Cost.AmountCNY != nil || res.Cost.Status != "pending" {
 		t.Fatal("Grok cost should remain unknown, never DeepSeek priced", res, err)
 	}
-	res, err = app.runAudit(ctx, p, *p.Active, p.ActiveVersion, key.ID, "production", "hello")
+	res, err = runTestAudit(t, app, p, key.ID, "production", "hello")
 	if err != nil || !res.CacheHit || inferenceCalls.Load() != 1 {
 		t.Fatal("Grok cache failed", err)
 	}
 	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", false, ProviderGrok, "https://sub2api.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = app.runAudit(ctx, p, *p.Active, p.ActiveVersion, key.ID, "production", "hello"); err == nil {
+	if _, err = runTestAudit(t, app, p, key.ID, "production", "hello"); err == nil {
 		t.Fatal("revoked connection reused cached verdict")
 	}
 	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", true, ProviderGrok, "https://sub2api.test"); err != nil {
@@ -290,7 +294,7 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if _, err = store.DB.Exec("INSERT INTO client_budgets(client_id,monthly_limit) VALUES($1,1000000000000)", key.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = app.runAudit(ctx, p, *p.Active, p.ActiveVersion, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 1 {
+	if _, err = runTestAudit(t, app, p, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 1 {
 		t.Fatal("monetary budget silently bypassed for unpriced Grok")
 	}
 	request := httptest.NewRequest("GET", "/admin/billing/costs", nil)
@@ -298,9 +302,86 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if err = app.costs(w, request); err != nil {
 		t.Fatal(err)
 	}
-	// Existing DeepSeek policy remains readable and unpublished.
+	// The default policy stays disabled until configured.
 	original, _ := store.Policy(ctx, "abuse-default")
-	if original.ActiveVersion != 0 || original.Draft.ProviderID() != ProviderDeepSeek {
-		t.Fatal("legacy DeepSeek changed")
+	if original.Enabled || len(original.Config.Channels) != 0 {
+		t.Fatal("default policy changed")
+	}
+}
+
+func TestDeepSeekThirdPartyURLsAndRequestPath(t *testing.T) {
+	for _, tc := range []struct {
+		base, want string
+		official   bool
+	}{
+		{"https://api.deepseek.com", "https://api.deepseek.com/chat/completions", true},
+		{"https://api.deepseek.com/v1/", "https://api.deepseek.com/chat/completions", true},
+		{"https://gateway.example.com", "https://gateway.example.com/v1/chat/completions", false},
+		{"https://gateway.example.com/v1/", "https://gateway.example.com/v1/chat/completions", false},
+		{"http://127.0.0.1:8099/v1", "http://127.0.0.1:8099/v1/chat/completions", false},
+	} {
+		cfg := DefaultConfig()
+		cfg.BaseURL = tc.base
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(tc.base, err)
+		}
+		if cfg.inferenceURL() != tc.want || cfg.officialPricing() != tc.official {
+			t.Fatal("incorrect endpoint or pricing", tc.base, cfg.inferenceURL())
+		}
+	}
+	for _, base := range []string{"ftp://gateway.test", "https://user:secret@gateway.test", "https://gateway.test?key=secret", "https://gateway.test/#fragment", "https://gateway.test/v1/chat/completions"} {
+		cfg := DefaultConfig()
+		cfg.BaseURL = base
+		if cfg.Validate() == nil {
+			t.Fatal("invalid base accepted", base)
+		}
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer third-party-test-key" {
+			t.Error("incorrect third-party request", r.Method, r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.2,\"reason\":\"正常\"}"}}]}`)
+	}))
+	defer upstream.Close()
+	cfg := DefaultConfig()
+	cfg.BaseURL = upstream.URL + "/v1/"
+	result, _, _, err := NewEngine(1).Assess(context.Background(), cfg, "third-party-test-key", "hello")
+	if err != nil || result.Confidence != .2 {
+		t.Fatal(result, err)
+	}
+}
+
+func TestDeepSeekThirdPartyCredentialBindingAndCost(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	cred, err := store.SaveProviderCredential(ctx, "admin", "", "third-party", "third-party-test-key", true, ProviderDeepSeek, "https://gateway.test/v1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	cfg.CredentialID = cred
+	cfg.BaseURL = "https://gateway.test/v1"
+	if _, err = store.CredentialForConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	wrong := cfg
+	wrong.BaseURL = "https://other-gateway.test"
+	if _, err = store.CredentialForConfig(ctx, wrong); err == nil {
+		t.Fatal("credential crossed origin")
+	}
+	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "third-party", "", true, ProviderDeepSeek, "https://other-gateway.test"); err == nil {
+		t.Fatal("saved origin was changed")
+	}
+	p, _ := store.Policy(ctx, "abuse-default")
+	entry, err := store.ReserveCost(ctx, randomToken("cost_"), "admin", "test", p, cfg, "hello", false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Price != nil {
+		t.Fatal("third-party got official price")
+	}
+	cost, err := store.SettleCost(ctx, entry, Usage{Attempted: true, Reported: true, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, time.Now())
+	if err != nil || cost.AmountCNY != nil || cost.Period != "gateway_managed" {
+		t.Fatal(cost, err)
 	}
 }

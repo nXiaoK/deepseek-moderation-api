@@ -209,7 +209,7 @@ func (u *Usage) UnmarshalJSON(raw []byte) error {
 }
 
 func providerTariff(cfg PolicyConfig, t time.Time) string {
-	if cfg.ProviderID() == ProviderGrok {
+	if !cfg.officialPricing() {
 		return "gateway_managed"
 	}
 	return pricePeriod(t)
