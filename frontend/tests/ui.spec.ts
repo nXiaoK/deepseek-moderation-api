@@ -388,6 +388,89 @@ test("small costs retain decimals and isolated latency samples remain visible", 
     .toBeGreaterThan(15);
 });
 
+test("connection credential deletion confirms, cancels and clears the edited entry", async ({
+  page,
+}) => {
+  await page.route("**/admin/credentials", (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "unused",
+          name: "待删除连接",
+          provider: "deepseek",
+          base_url: "https://api.deepseek.com",
+          masked: "••••test",
+          active: true,
+        },
+      ],
+    }),
+  );
+  let deletes = 0;
+  await page.route("**/admin/credentials/unused", (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    deletes++;
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/");
+  await navigate(page, "连接密钥");
+  const remove = page.getByRole("button", {
+    name: "删除连接密钥 待删除连接",
+    exact: true,
+  });
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await remove.click();
+  await expect(remove).toBeVisible();
+  expect(deletes).toBe(0);
+  await page.getByRole("button", { name: "替换", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "替换模型密钥" }),
+  ).toBeVisible();
+  await page
+    .getByLabel("DeepSeek API Key", { exact: true })
+    .fill("test-unsaved-secret");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("待删除连接");
+    await dialog.accept();
+  });
+  await remove.click();
+  await expect(remove).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "添加模型密钥" }),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("DeepSeek API Key", { exact: true }),
+  ).toHaveValue("");
+  await expect(page.getByRole("status")).toContainText("连接密钥已删除");
+  expect(deletes).toBe(1);
+});
+
+test("referenced connection credential deletion reports the conflict and keeps the entry", async ({
+  page,
+}) => {
+  await page.route("**/admin/credentials/credential-1", (route) =>
+    route.fulfill({
+      status: 409,
+      json: {
+        error: {
+          code: "credential_in_use",
+          message: "连接密钥仍被模型通道引用，请先在审核模型更换连接密钥",
+        },
+      },
+    }),
+  );
+  await page.goto("/");
+  await navigate(page, "连接密钥");
+  page.once("dialog", (dialog) => dialog.accept());
+  const remove = page.getByRole("button", {
+    name: "删除连接密钥 DeepSeek 主账户",
+    exact: true,
+  });
+  await remove.click();
+  await expect(page.getByRole("alert")).toContainText("仍被模型通道引用");
+  await expect(remove).toBeVisible();
+  await expect(remove).toBeEnabled();
+});
+
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {
   await page.route("**/admin/session", (route) =>
     route.fulfill({ status: 401, json: { error: { message: "请先登录" } } }),

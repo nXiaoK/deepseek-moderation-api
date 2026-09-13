@@ -1,0 +1,110 @@
+package audit
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestDeleteCredentialAuthorizationAndLifecycle(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	app, err := NewServer(store, "http://localhost:8090", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrf := randomToken("session_"), randomToken("csrf_")
+	if _, err := store.DB.ExecContext(ctx, `INSERT INTO admin_sessions(token_hash,username,csrf,expires_at) VALUES($1,'admin',$2,NOW()+INTERVAL '1 hour')`, digest(token), csrf); err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.SaveCredential(ctx, "admin", "", "keep", "test-only-keep-secret", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	for _, active := range []bool{true, false} {
+		id, err := store.SaveCredential(ctx, "admin", "", "delete", "test-only-delete-secret", active)
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := func(login, validCSRF bool, want int) {
+			t.Helper()
+			r := httptest.NewRequest("DELETE", "/admin/credentials/"+id, nil)
+			r.Header.Set("Origin", app.Origin)
+			if login {
+				r.AddCookie(&http.Cookie{Name: "audit_session", Value: token})
+			}
+			if validCSRF {
+				r.Header.Set("X-CSRF-Token", csrf)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != want {
+				t.Fatalf("delete: got %d, want %d: %s", w.Code, want, w.Body.String())
+			}
+		}
+		call(false, false, 401)
+		call(true, false, 403)
+		items, err := store.Credentials(ctx)
+		if err != nil || len(items) != 2 {
+			t.Fatalf("rejected delete changed credentials: %+v, %v", items, err)
+		}
+		call(true, true, 200)
+		call(true, true, 404)
+		items, err = store.Credentials(ctx)
+		if err != nil || len(items) != 1 || items[0].ID != other {
+			t.Fatalf("wrong remaining credentials: %+v, %v", items, err)
+		}
+		if _, err := store.CredentialSecret(ctx, id); errorCode(err) != "credential_unavailable" {
+			t.Fatalf("deleted credential usable: %v", err)
+		}
+		var rows, actions int
+		if err := store.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM provider_credentials WHERE id=$1", id).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("credential ciphertext retained: %d, %v", rows, err)
+		}
+		if err := store.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_action_logs WHERE action='credential.delete' AND resource_id=$1", id).Scan(&actions); err != nil || actions != 1 {
+			t.Fatalf("wrong delete action count: %d, %v", actions, err)
+		}
+		if err := store.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_action_logs WHERE action='credential.update' AND resource_id=$1", id).Scan(&actions); err != nil || actions != 1 {
+			t.Fatalf("previous action lost: %d, %v", actions, err)
+		}
+	}
+}
+
+func TestDeleteCredentialRejectsChannelReferences(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	replacement, err := store.SaveCredential(ctx, "admin", "", "replacement", "test-replacement-secret", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false} {
+		id, err := store.SaveCredential(ctx, "admin", "", "referenced", "test-referenced-secret", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := store.SaveChannel(ctx, "admin", ModelChannel{Name: id, Model: "deepseek-flash", CredentialID: id, TimeoutMS: 4000, MaxTokens: 512, MaxConcurrency: 8, Enabled: enabled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteCredential(ctx, "admin", id); errorCode(err) != "credential_in_use" || !strings.Contains(err.Error(), "审核模型") {
+			t.Fatalf("reference was not rejected: %v", err)
+		}
+		if _, err := store.CredentialSecret(ctx, id); err != nil {
+			t.Fatal("rejected delete damaged credential", err)
+		}
+		var actions int
+		if err := store.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_action_logs WHERE action='credential.delete' AND resource_id=$1", id).Scan(&actions); err != nil || actions != 0 {
+			t.Fatalf("rejected delete logged as successful: %d, %v", actions, err)
+		}
+		c.CredentialID = replacement
+		if _, err := store.SaveChannel(ctx, "admin", c); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteCredential(ctx, "admin", id); err != nil {
+			t.Fatal("unbound credential could not be deleted", err)
+		}
+	}
+}

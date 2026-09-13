@@ -368,6 +368,25 @@ async function toggleCredential(c: Credential) {
     notice.value = c.active ? "密钥已停用。" : "密钥已启用。";
   });
 }
+async function deleteCredential(c: Credential) {
+  if (
+    busy.value ||
+    !window.confirm(
+      `确定删除连接密钥“${c.name}”（${c.masked}）？保存的凭证将被永久删除，无法恢复。仍被模型通道引用的密钥不能删除。`,
+    )
+  )
+    return;
+  await run(async () => {
+    await api(`/admin/credentials/${c.id}`, "DELETE");
+    credentials.value = credentials.value.filter((item) => item.id !== c.id);
+    if (credentialEditID.value === c.id) {
+      credentialEditID.value = "";
+      credentialName.value = "";
+      credentialSecret.value = "";
+    }
+    notice.value = "连接密钥已删除。";
+  });
+}
 async function createKey() {
   await run(async () => {
     const data = await api<{ token: string }>("/admin/api-keys", "POST", {
@@ -897,11 +916,19 @@ window.addEventListener("beforeunload", (e) => {
                   ><button @click="toggleCredential(c)" :disabled="busy">
                     {{ c.active ? "停用" : "启用" }}
                   </button>
+                  <button
+                    class="icon-button danger-button"
+                    title="删除连接密钥"
+                    :aria-label="'删除连接密钥 ' + c.name"
+                    @click="deleteCredential(c)"
+                    :disabled="busy"
+                  >
+                    <AppIcon name="trash" :size="16" />
+                  </button>
                 </div>
               </div>
-            </section>
-          </div></template
-        >
+            </section></div
+        ></template>
 
         <template v-if="page === 'keys'"
           ><section v-if="newToken" class="token-reveal">

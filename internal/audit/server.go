@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/credentials", s.credentials)
 	admin("POST /admin/credentials", s.saveCredential)
 	admin("PUT /admin/credentials/{id}", s.saveCredential)
+	admin("DELETE /admin/credentials/{id}", s.deleteCredential)
 	admin("GET /admin/api-keys", s.keys)
 	admin("POST /admin/api-keys", s.createKey)
 	admin("POST /admin/api-keys/{id}/revoke", s.revokeKey)
