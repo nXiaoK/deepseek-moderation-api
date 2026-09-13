@@ -76,6 +76,25 @@ export function auditInput(log: AuditLog): string {
 export function auditError(code: string, message?: string): string {
   return message || errors[code] || code;
 }
+export function auditCost(log: AuditLog): string {
+  if (!log.cost) return "—";
+  // Keep the server's decimal precision: small per-request costs must not
+  // become ¥0.00, and an unknown total must not appear free.
+  return log.cost.amount_cny != null ? `¥${log.cost.amount_cny}` : "待核对";
+}
+export function auditCostStatus(log: AuditLog): string {
+  if (!log.cost) return "未记录";
+  const labels: Record<string, string> = {
+    calculated: "用量计价",
+    estimated: "保守估算",
+    reconciled: "已核对",
+    local_cache: "本地缓存",
+    zero: "无上游调用",
+    reserved: "预留中",
+    pending: "费用尚未确定",
+  };
+  return labels[log.cost.status] || log.cost.status;
+}
 export function formatModelOutput(output: string): string {
   try {
     return JSON.stringify(JSON.parse(output), null, 2);

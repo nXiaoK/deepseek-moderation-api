@@ -9,6 +9,8 @@ import {
   auditStage,
   auditResult,
   auditInput,
+  auditCost,
+  auditCostStatus,
   formatModelOutput,
   lastModelOutput,
 } from "./auditDisplay";
@@ -896,6 +898,8 @@ window.addEventListener("beforeunload", (e) => {
                     <th>评分</th>
                     <th>原因</th>
                     <th>耗时</th>
+                    <th>费用（元）</th>
+                    <th>图片数</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -946,6 +950,10 @@ window.addEventListener("beforeunload", (e) => {
                       >
                     </td>
                     <td>{{ l.latency_ms }} ms</td>
+                    <td :title="l.cost?.note">
+                      {{ auditCost(l) }}<small>{{ auditCostStatus(l) }}</small>
+                    </td>
+                    <td>{{ l.request?.image_count ?? "—" }}</td>
                     <td>
                       <button class="text-button" @click="openLog(l.id)">
                         详情
