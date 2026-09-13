@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -158,10 +159,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
 func readJSON(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	return readJSONLimit(w, r, v, 1<<20)
+}
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		return problem(413, "body_too_large", "请求体最多 1 MiB")
+		return problem(413, "body_too_large", fmt.Sprintf("请求体最多 %d MiB", limit>>20))
 	}
 	if err = strictJSON(raw, v); err != nil {
 		return problem(400, "invalid_json", "请求 JSON 或字段不符合接口要求")
@@ -349,20 +353,20 @@ func (s *Server) policyState(w http.ResponseWriter, r *http.Request) error {
 	return s.getPolicy(w, r)
 }
 func (s *Server) testPolicy(w http.ResponseWriter, r *http.Request) error {
-	release, err := s.admission.acquire(r.ContentLength, 1<<20)
+	release, err := s.admission.acquire(r.ContentLength, moderationImageBodyLimit)
 	if err != nil {
 		return err
 	}
 	defer release()
 	var in struct {
-		Input     string          `json:"input"`
+		Input     json.RawMessage `json:"input"`
 		Config    *PolicySettings `json:"config"`
 		ChannelID string          `json:"channel_id"`
 	}
-	if err := readJSON(w, r, &in); err != nil {
+	if err := readJSONLimit(w, r, &in, moderationImageBodyLimit); err != nil {
 		return err
 	}
-	input, err := validateText(in.Input)
+	input, images, err := parseModerationInput(in.Input, s.Runtime.MaxImages)
 	if err != nil {
 		return err
 	}
@@ -377,7 +381,7 @@ func (s *Server) testPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	response, err := s.runAudit(r.Context(), p, channels, actor(r), "test", input, in.ChannelID)
+	response, err := s.runAudit(r.Context(), p, channels, actor(r), "test", input, in.ChannelID, images...)
 	w.Header().Set("X-Audit-Request-ID", response.ID)
 	if err != nil {
 		return err

@@ -312,6 +312,12 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	log := AuditLog{ID: id, Kind: kind, PolicyID: p.ID, ClientID: client, Threshold: p.Config.Threshold, InputStored: p.Config.StoreInput, CreatedAt: start.UTC(), Attempts: []AuditAttempt{}}
 	if a != nil {
 		log.Request = a.log.Request
+	} else if kind == "test" {
+		inputType := "text"
+		if len(images) > 0 {
+			inputType = "image"
+		}
+		log.Request = &AuditRequest{Method: "POST", Path: "/admin/policies/" + p.ID + "/test", Stage: "audit", InputType: inputType, TextChars: utf8.RuneCountInString(input), ImageCount: len(images)}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.Config.TotalTimeoutMS)*time.Millisecond)
 	defer cancel()
@@ -354,6 +360,14 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 			log.Request.Stage = "completed"
 		}
 		a.log, a.input, a.days = log, input, p.Config.RetentionDays
+	}
+	if log.Request != nil {
+		log.Request.InputScope = response.InputScope
+		log.Request.TextOnlyFallback = response.InputScope == "text_only"
+		log.Request.HTTPStatus = auditHTTPStatus(err)
+		if err == nil {
+			log.Request.Stage = "completed"
+		}
 	}
 	if recordErr := s.Store.Record(finishCtx, log, input, p.Config.RetentionDays); recordErr != nil {
 		if a != nil {

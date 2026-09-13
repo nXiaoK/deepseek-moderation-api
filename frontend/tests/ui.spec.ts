@@ -550,6 +550,67 @@ test("connection-specific model prices can be saved and reset", async ({
   expect(reset).toBe(true);
 });
 
+test("image trials support uploads, URL blocks and removal", async ({
+  page,
+}, testInfo) => {
+  let submitted: Record<string, unknown> | undefined;
+  await page.route("**/admin/policies/policy-1/test", (route) => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({
+      json: {
+        id: "trial",
+        actual_model: "deepseek-v3.2",
+        latency_ms: 300,
+        attempt_count: 1,
+        usage: { reported: true, total_tokens: 20 },
+        results: [
+          {
+            flagged: false,
+            audit: { confidence: 0.1, threshold: 0.8, reason: "ok" },
+          },
+        ],
+        attempts: [],
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("tab", { name: "审核试跑" }).click();
+  await page
+    .getByLabel("选择本地图片", { exact: true })
+    .setInputFiles({
+      name: "sample.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  await expect(page.getByAltText("审核图片 1")).toBeVisible();
+  await page
+    .getByLabel("图片 URL", { exact: true })
+    .fill("https://example.com/test.png");
+  await page.getByRole("button", { name: "添加图片 URL", exact: true }).click();
+  await page.getByLabel("待审核内容", { exact: true }).fill("图文样本");
+  await page.getByRole("button", { name: "运行审核", exact: true }).click();
+  await expect(page.getByText("ok", { exact: true })).toBeVisible();
+  const blocks = submitted?.input as {
+    type: string;
+    image_url?: { url: string };
+  }[];
+  expect(blocks.map((block) => block.type)).toEqual([
+    "text",
+    "image_url",
+    "image_url",
+  ]);
+  expect(blocks[1].image_url?.url).toMatch(/^data:image\/png;base64,/);
+  await page.screenshot({
+    path: testInfo.outputPath("image-trial.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "移除图片 2", exact: true }).click();
+  await expect(page.locator(".trial-image")).toHaveCount(1);
+});
+
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {
   await page.route("**/admin/session", (route) =>
     route.fulfill({ status: 401, json: { error: { message: "请先登录" } } }),

@@ -23,6 +23,74 @@ const tab = ref("rules"),
   testing = ref(false),
   result = ref<AuditResponse | null>(null),
   testError = ref("");
+const images = ref<{ url: string; detail: string }[]>([]);
+const imageURL = ref("");
+const fileInput = ref<HTMLInputElement>();
+const readingImages = ref(false);
+function addImageURL() {
+  try {
+    const url = new URL(imageURL.value.trim());
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.href.length > 8192
+    )
+      throw new Error("图片 URL 无效");
+    if (images.value.length >= 16) throw new Error("最多添加 16 张图片");
+    images.value.push({ url: url.href, detail: "auto" });
+    imageURL.value = "";
+    testError.value = "";
+  } catch (e) {
+    testError.value = e instanceof Error ? e.message : "图片 URL 无效";
+  }
+}
+async function uploadImages(event: Event) {
+  const element = event.target as HTMLInputElement;
+  const files = [...(element.files || [])];
+  element.value = "";
+  if (!files.length) return;
+  readingImages.value = true;
+  try {
+    if (images.value.length + files.length > 16)
+      throw new Error("最多添加 16 张图片");
+    if (
+      files.some(
+        (file) =>
+          !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
+            file.type,
+          ),
+      )
+    )
+      throw new Error("仅支持 PNG、JPEG、WebP、GIF");
+    if (files.reduce((sum, file) => sum + file.size, 0) > 24 * 1024 * 1024)
+      throw new Error("所选图片合计不能超过 24 MiB");
+    const added: { url: string; detail: string }[] = [];
+    for (const file of files) {
+      const url = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("图片读取失败"));
+        reader.readAsDataURL(file);
+      });
+      added.push({ url, detail: "auto" });
+    }
+    if (
+      [...images.value, ...added].reduce(
+        (sum, image) => sum + image.url.length,
+        0,
+      ) >
+      31 * 1024 * 1024
+    )
+      throw new Error("图片编码后超过请求大小限制");
+    images.value.push(...added);
+    testError.value = "";
+  } catch (e) {
+    testError.value = e instanceof Error ? e.message : "图片读取失败";
+  } finally {
+    readingImages.value = false;
+  }
+}
 const channel = (id: string) => props.channels.find((c) => c.id === id);
 const options = computed(() =>
   props.channels.filter(
@@ -45,14 +113,28 @@ async function test() {
   result.value = null;
   testError.value = "";
   try {
+    const body = {
+      input: images.value.length
+        ? [
+            ...(input.value ? [{ type: "text", text: input.value }] : []),
+            ...images.value.map((image) => ({
+              type: "image_url",
+              image_url: image,
+            })),
+          ]
+        : input.value,
+      config: config.value,
+      channel_id: selectedChannel.value,
+    };
+    if (
+      new TextEncoder().encode(JSON.stringify(body)).byteLength >
+      32 * 1024 * 1024
+    )
+      throw new Error("试跑请求体最多 32 MiB");
     result.value = await api<AuditResponse>(
       `/admin/policies/${props.policy.id}/test`,
       "POST",
-      {
-        input: input.value,
-        config: config.value,
-        channel_id: selectedChannel.value,
-      },
+      body,
     );
   } catch (e) {
     testError.value = e instanceof Error ? e.message : "试跑失败";
@@ -308,10 +390,77 @@ async function test() {
         placeholder="输入测试样本…"
       />
     </label>
+    <div class="image-tools">
+      <label class="image-url"
+        >图片 URL<input
+          v-model="imageURL"
+          type="url"
+          placeholder="https://…"
+          :disabled="testing || readingImages"
+      /></label>
+      <button
+        class="icon-button"
+        title="添加图片 URL"
+        aria-label="添加图片 URL"
+        :disabled="testing || readingImages || !imageURL.trim()"
+        @click="addImageURL"
+      >
+        <AppIcon name="plus" :size="16" />
+      </button>
+      <button :disabled="testing || readingImages" @click="fileInput?.click()">
+        <AppIcon name="upload" :size="16" />上传图片
+      </button>
+      <input
+        ref="fileInput"
+        class="sr-only"
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        aria-label="选择本地图片"
+        :disabled="testing || readingImages"
+        @change="uploadImages"
+      />
+    </div>
+    <div v-if="images.length" class="trial-images">
+      <figure v-for="(image, i) in images" :key="i" class="trial-image">
+        <img
+          v-if="image.url.startsWith('data:')"
+          :src="image.url"
+          :alt="'审核图片 ' + (i + 1)"
+        />
+        <div v-else class="remote-image" :title="image.url">
+          <AppIcon name="image" :size="28" /><span>远程图片 {{ i + 1 }}</span>
+        </div>
+        <button
+          class="icon-button"
+          :aria-label="'移除图片 ' + (i + 1)"
+          title="移除图片"
+          :disabled="testing || readingImages"
+          @click="images.splice(i, 1)"
+        >
+          <AppIcon name="close" :size="14" />
+        </button>
+        <figcaption>
+          <label :for="'trial-image-' + i" class="sr-only"
+            >图片 {{ i + 1 }} 精度</label
+          ><select
+            :id="'trial-image-' + i"
+            v-model="image.detail"
+            :disabled="testing"
+          >
+            <option value="auto">自动精度</option>
+            <option value="low">低精度</option>
+            <option value="high">高精度</option>
+          </select>
+        </figcaption>
+      </figure>
+    </div>
     <button
       class="primary"
       @click="test"
-      :disabled="testing || busy || !input.trim()"
+      :disabled="
+        testing || busy || readingImages || (!input.trim() && !images.length)
+      "
     >
       <AppIcon
         :name="testing ? 'refresh' : 'play'"
@@ -323,7 +472,7 @@ async function test() {
       试跑不使用正式结果缓存，不触发 sub2api 封禁或通知。指定通道时只调用一次。
     </p>
     <div v-if="testError" class="banner error" role="alert">
-      {{ testError }}；可在“审核记录”查看失败过程。
+      {{ testError }}
     </div>
     <div v-if="result" class="test-result">
       <span
@@ -349,3 +498,62 @@ async function test() {
     </div>
   </section>
 </template>
+
+<style scoped>
+.image-tools {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+.image-url {
+  flex: 1;
+  min-width: 180px;
+}
+.trial-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 12px;
+  max-width: 720px;
+  margin: 20px 0;
+}
+.trial-image {
+  margin: 0;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  min-width: 0;
+}
+.trial-image > img,
+.remote-image {
+  width: 100%;
+  aspect-ratio: 4/3;
+  object-fit: contain;
+  background: #f6f8fc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #8191aa;
+  font-size: 11px;
+}
+.trial-image > button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 27px;
+  height: 27px;
+  min-height: 27px;
+  background: #fff;
+}
+figcaption {
+  padding: 6px;
+}
+figcaption select {
+  font-size: 11px;
+  padding: 5px;
+}
+</style>
