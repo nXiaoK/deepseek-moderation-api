@@ -224,7 +224,11 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 			return nil, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7 WHERE id=$6 AND status IN ('reserved','local_cache')`, amountArg, status, string(raw), end, note, entry.ID, period)
+	var latency any
+	if u.Attempted && !end.Before(entry.StartedAt) {
+		latency = end.Sub(entry.StartedAt).Milliseconds()
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7,latency_ms=$8,request_sent=$9 WHERE id=$6 AND status IN ('reserved','local_cache')`, amountArg, status, string(raw), end, note, entry.ID, period, latency, u.Attempted)
 	if err != nil {
 		return nil, err
 	}

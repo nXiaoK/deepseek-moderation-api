@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS audit_costs (
 );
 CREATE INDEX IF NOT EXISTS audit_costs_budget ON audit_costs(client_id,budget_date);
 CREATE INDEX IF NOT EXISTS audit_costs_time ON audit_costs(started_at DESC);
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS latency_ms BIGINT CHECK(latency_ms >= 0);
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS request_sent BOOLEAN;
 ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS tariff_period TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS cost_adjustments (
  id BIGSERIAL PRIMARY KEY, cost_id TEXT NOT NULL REFERENCES audit_costs(id),

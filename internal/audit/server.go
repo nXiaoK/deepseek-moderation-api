@@ -93,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	admin("DELETE /admin/api-keys/{id}", s.deleteKey)
 	admin("GET /admin/audit-logs", s.logs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
+	admin("GET /admin/analytics", s.analytics)
 	admin("GET /admin/overview", func(w http.ResponseWriter, r *http.Request) error {
 		data, err := s.Store.Overview(r.Context())
 		if err != nil {

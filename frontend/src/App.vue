@@ -4,6 +4,7 @@ import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
+import AnalyticsPanel from "./AnalyticsPanel.vue";
 import {
   auditError,
   auditStage,
@@ -84,8 +85,9 @@ const nav = [
   ["credentials", "连接密钥", "04"],
   ["keys", "访问密钥", "05"],
   ["logs", "审核记录", "06"],
-  ["billing", "成本与预算", "07"],
-  ["settings", "系统设置", "08"],
+  ["analytics", "数据分析", "07"],
+  ["billing", "成本与预算", "08"],
+  ["settings", "系统设置", "09"],
 ];
 const title = computed(
   () => nav.find((n) => n[0] === page.value)?.[1] || "审核策略",
@@ -501,9 +503,11 @@ window.addEventListener("beforeunload", (e) => {
                           ? "为 sub2api 和其他调用方分配独立访问凭证。"
                           : page === "logs"
                             ? "追踪实际模型、调用过程、评分与原因。"
-                            : page === "billing"
-                              ? "追踪上游 token 成本，设置调用方的日预算与月预算。"
-                              : "管理账户和查看后台操作记录。"
+                            : page === "analytics"
+                              ? "按时间范围比较模型的 token 消耗、费用和响应速度。"
+                              : page === "billing"
+                                ? "追踪上游 token 成本，设置调用方的日预算与月预算。"
+                                : "管理账户和查看后台操作记录。"
               }}
             </p>
           </div>
@@ -514,7 +518,7 @@ window.addEventListener("beforeunload", (e) => {
           >
             ＋ 新建策略</button
           ><button
-            v-else-if="page !== 'billing'"
+            v-else-if="page !== 'billing' && page !== 'analytics'"
             @click="navigate(page)"
             :disabled="busy"
           >
@@ -588,6 +592,14 @@ window.addEventListener("beforeunload", (e) => {
         <BillingPanel
           v-if="page === 'billing'"
           :clients="keys"
+          @unauthorized="
+            user = '';
+            setCSRF('');
+          "
+        />
+
+        <AnalyticsPanel
+          v-if="page === 'analytics'"
           @unauthorized="
             user = '';
             setCSRF('');
