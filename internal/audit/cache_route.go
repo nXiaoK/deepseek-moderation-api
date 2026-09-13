@@ -73,7 +73,7 @@ func (s *Server) cachedRoute(ctx context.Context, p Policy, candidates []routeCa
 			continue
 		}
 		var active bool
-		err = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND p.enabled AND EXISTS(SELECT 1 FROM client_api_keys a WHERE a.id=$5 AND a.active AND a.deleted_at IS NULL AND a.policy_ids ? p.id) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$3 AND c.credential_id=$4`, c.channel.ID, p.ID, c.channel.Revision, c.channel.CredentialID, client).Scan(&active)
+		err = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND p.enabled AND EXISTS(SELECT 1 FROM client_api_keys a WHERE a.id=$5 AND a.active AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>NOW()) AND a.policy_ids ? p.id) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$3 AND c.credential_id=$4`, c.channel.ID, p.ID, c.channel.Revision, c.channel.CredentialID, client).Scan(&active)
 		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
 			continue
 		}

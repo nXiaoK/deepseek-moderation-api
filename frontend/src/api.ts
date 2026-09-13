@@ -85,6 +85,10 @@ export interface Credential {
   active: boolean;
 }
 export interface ClientKey {
+  revision: number;
+  expires_at?: string | null;
+  last_used_at?: string | null;
+  rotated_at?: string | null;
   id: string;
   name: string;
   prefix: string;

@@ -177,13 +177,17 @@ type Credential struct {
 	Active   bool   `json:"active"`
 }
 type ClientKey struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Prefix    string    `json:"prefix"`
-	PolicyIDs []string  `json:"policy_ids"`
-	RPM       int       `json:"rpm"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
+	Revision   int64      `json:"revision"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	RotatedAt  *time.Time `json:"rotated_at"`
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Prefix     string     `json:"prefix"`
+	PolicyIDs  []string   `json:"policy_ids"`
+	RPM        int        `json:"rpm"`
+	Active     bool       `json:"active"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 type Assessment struct {
 	Confidence float64 `json:"confidence"`

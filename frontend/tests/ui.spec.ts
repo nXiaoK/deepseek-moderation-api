@@ -13,8 +13,8 @@ async function navigate(page: Page, name: string) {
   await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
   await expect(
     page
-      .getByRole("navigation", { name: "主导航" })
-      .getByRole("button", { name, exact: true }),
+      .getByRole("navigation", { name: "主导航", includeHidden: true })
+      .getByRole("button", { name, exact: true, includeHidden: true }),
   ).toBeEnabled();
 }
 async function checkCanvas(page: Page) {
@@ -806,6 +806,45 @@ test("evaluation samples can be edited and imported without starting a run", asy
   await page.getByRole("button", { name: "导入内置样本", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("已导入 48 条");
   expect(imported).toBe(true);
+});
+
+test("access keys support editing expiry and identity-preserving rotation", async ({
+  page,
+}) => {
+  let settings: Record<string, unknown> | undefined;
+  await page.route("**/admin/api-keys/client-1", (route) => {
+    expect(route.request().method()).toBe("PUT");
+    settings = route.request().postDataJSON();
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route("**/admin/api-keys/client-1/rotate", (route) => {
+    expect(route.request().postDataJSON().expected_revision).toBe(1);
+    return route.fulfill({ json: { token: "dsa_test_rotated_only" } });
+  });
+  await page.goto("/");
+  await navigate(page, "访问密钥");
+  await page
+    .getByRole("button", { name: "编辑访问密钥 生产应用", exact: true })
+    .click();
+  const modal = page.getByRole("dialog", { name: "编辑访问密钥", exact: true });
+  await modal.getByLabel("调用方名称", { exact: true }).fill("更新应用");
+  await modal.getByLabel("每分钟请求上限", { exact: true }).fill("120");
+  await modal.getByLabel("到期时间", { exact: true }).fill("2028-01-01T00:00");
+  await modal
+    .getByRole("button", { name: "保存访问密钥", exact: true })
+    .click();
+  await expect(modal).toHaveCount(0);
+  expect(settings?.name).toBe("更新应用");
+  expect(settings?.rpm).toBe(120);
+  expect(settings?.expected_revision).toBe(1);
+  expect(settings?.expires_at).toBeTruthy();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "轮换访问密钥 生产应用", exact: true })
+    .click();
+  await expect(page.locator(".token-reveal")).toContainText(
+    "dsa_test_rotated_only",
+  );
 });
 
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {

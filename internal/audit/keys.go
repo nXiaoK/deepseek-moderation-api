@@ -10,7 +10,7 @@ import (
 // settlement, while irreversibly removing the token's authentication verifier.
 func (s *Store) DeleteKey(ctx context.Context, actor, id string) error {
 	return s.mutate(ctx, actor, "key.delete", id, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `UPDATE client_api_keys SET active=FALSE,deleted_at=NOW(),token_hash=$2 WHERE id=$1 AND deleted_at IS NULL`, id, digest(randomToken("deleted_")))
+		result, err := tx.ExecContext(ctx, `UPDATE client_api_keys SET active=FALSE,deleted_at=NOW(),token_hash=$2,revision=revision+1 WHERE id=$1 AND deleted_at IS NULL`, id, digest(randomToken("deleted_")))
 		if err != nil {
 			return err
 		}

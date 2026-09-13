@@ -116,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	admin("DELETE /admin/credentials/{id}", s.deleteCredential)
 	admin("GET /admin/api-keys", s.keys)
 	admin("POST /admin/api-keys", s.createKey)
+	admin("PUT /admin/api-keys/{id}", s.updateKey)
+	admin("POST /admin/api-keys/{id}/rotate", s.rotateKey)
 	admin("POST /admin/api-keys/{id}/revoke", s.revokeKey)
 	admin("DELETE /admin/api-keys/{id}", s.deleteKey)
 	admin("GET /admin/audit-logs", s.logs)
@@ -454,6 +456,7 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) error {
 		Name      string   `json:"name"`
 		PolicyIDs []string `json:"policy_ids"`
 		RPM       int      `json:"rpm"`
+		ExpiresAt *string  `json:"expires_at"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -461,7 +464,11 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) error {
 	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || len(in.PolicyIDs) == 0 || len(in.PolicyIDs) > 100 || in.RPM < 1 || in.RPM > 10000 {
 		return problem(400, "invalid_key_config", "请输入名称、允许的策略和每分钟限额（1～10000）")
 	}
-	token, err := s.Store.CreateKey(r.Context(), actor(r), in.Name, in.PolicyIDs, in.RPM)
+	expiry, err := keyExpiry(in.ExpiresAt, false)
+	if err != nil {
+		return err
+	}
+	token, err := s.Store.CreateKey(r.Context(), actor(r), in.Name, in.PolicyIDs, in.RPM, expiry)
 	if err != nil {
 		return err
 	}

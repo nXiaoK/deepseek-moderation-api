@@ -112,7 +112,24 @@ const credentialName = ref(""),
 const keyName = ref(""),
   keyPolicies = ref<string[]>([]),
   keyRPM = ref(60),
+  keyExpires = ref(""),
   newToken = ref("");
+const keyEditor = ref<(ClientKey & { expiry_input: string }) | null>(null);
+const localDateInput = (value: string) => {
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, -1);
+};
+const keyExpired = (key: ClientKey) =>
+  !!key.expires_at && Date.parse(key.expires_at) <= Date.now();
+function editKey(key: ClientKey) {
+  keyEditor.value = {
+    ...key,
+    policy_ids: [...key.policy_ids],
+    expiry_input: key.expires_at ? localDateInput(key.expires_at) : "",
+  };
+}
 const logItems = ref<AuditLog[]>([]),
   logTotal = ref(0),
   logPage = ref(1),
@@ -403,9 +420,13 @@ async function createKey() {
       name: keyName.value,
       policy_ids: keyPolicies.value,
       rpm: keyRPM.value,
+      expires_at: keyExpires.value
+        ? new Date(keyExpires.value).toISOString()
+        : null,
     });
     newToken.value = data.token;
     keyName.value = "";
+    keyExpires.value = "";
     keys.value = await api("/admin/api-keys");
   });
 }
@@ -414,6 +435,45 @@ async function revokeKey(k: ClientKey) {
     await api(`/admin/api-keys/${k.id}/revoke`, "POST", {});
     keys.value = await api("/admin/api-keys");
     notice.value = "访问密钥已停用。";
+  });
+}
+async function saveKey() {
+  await run(async () => {
+    const k = keyEditor.value;
+    if (!k) return;
+    await api("/admin/api-keys/" + k.id, "PUT", {
+      name: k.name,
+      policy_ids: k.policy_ids,
+      rpm: k.rpm,
+      active: k.active,
+      expires_at: k.expiry_input
+        ? new Date(k.expiry_input).toISOString()
+        : null,
+      expected_revision: k.revision || 1,
+    });
+    keyEditor.value = null;
+    keys.value = await api("/admin/api-keys");
+    notice.value = "访问密钥设置已保存。";
+  });
+}
+async function rotateKey(k: ClientKey) {
+  if (
+    !window.confirm(
+      "轮换“" +
+        k.name +
+        "”的访问密钥？旧密钥立即失效；调用方身份、策略授权和预算历史保持不变。",
+    )
+  )
+    return;
+  await run(async () => {
+    const result = await api<{ token: string }>(
+      "/admin/api-keys/" + k.id + "/rotate",
+      "POST",
+      { expected_revision: k.revision || 1 },
+    );
+    newToken.value = result.token;
+    keys.value = await api("/admin/api-keys");
+    notice.value = "密钥已轮换，请更新调用方凭证。启停与到期设置保持不变。";
   });
 }
 async function deleteKey(k: ClientKey) {
@@ -471,14 +531,8 @@ async function openLog(id: string) {
   });
 }
 async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
-  const localInput = (value: string) => {
-    const date = new Date(value);
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-      .toISOString()
-      .slice(0, -1);
-  };
-  logFrom.value = localInput(filter.from);
-  logTo.value = localInput(filter.to);
+  logFrom.value = localDateInput(filter.from);
+  logTo.value = localDateInput(filter.to);
   logKind.value = filter.kind === "all" ? "" : filter.kind;
   logModel.value = filter.model;
   logPolicy.value = filter.policy_id;
@@ -1006,6 +1060,12 @@ window.addEventListener("beforeunload", (e) => {
                     max="10000"
                     required
                 /></label>
+                <label
+                  >到期时间<input
+                    v-model="keyExpires"
+                    type="datetime-local"
+                    step="any"
+                /></label>
                 <fieldset>
                   <legend>允许调用的策略</legend>
                   <label v-for="p in policies" :key="p.id" class="check-row"
@@ -1027,16 +1087,54 @@ window.addEventListener("beforeunload", (e) => {
               <div v-for="k in keys" :key="k.id" class="credential-row">
                 <div>
                   <strong>{{ k.name }}</strong>
+                  <span
+                    class="badge"
+                    :class="
+                      !k.active ? 'gray' : keyExpired(k) ? 'amber' : 'green'
+                    "
+                    >{{
+                      !k.active ? "已停用" : keyExpired(k) ? "已过期" : "有效"
+                    }}</span
+                  >
                   <p class="muted small">
                     {{ k.prefix }}… · {{ k.rpm }} 次/分钟
                   </p>
                   <p class="muted small">
                     {{ k.policy_ids.map(policyLabel).join("、") }}
                   </p>
+                  <p class="muted small">
+                    {{
+                      k.expires_at ? "到期 " + time(k.expires_at) : "长期有效"
+                    }}
+                    ·
+                    {{
+                      k.last_used_at
+                        ? "最近访问 " + time(k.last_used_at)
+                        : "暂无访问记录"
+                    }}
+                  </p>
                 </div>
                 <div class="row">
                   <button @click="revokeKey(k)" :disabled="busy || !k.active">
                     {{ k.active ? "停用" : "已停用" }}
+                  </button>
+                  <button
+                    class="icon-button"
+                    title="编辑访问密钥"
+                    :aria-label="'编辑访问密钥 ' + k.name"
+                    :disabled="busy"
+                    @click="editKey(k)"
+                  >
+                    <AppIcon name="edit" :size="16" />
+                  </button>
+                  <button
+                    class="icon-button"
+                    title="轮换访问密钥"
+                    :aria-label="'轮换访问密钥 ' + k.name"
+                    :disabled="busy"
+                    @click="rotateKey(k)"
+                  >
+                    <AppIcon name="refresh" :size="16" />
                   </button>
                   <button
                     class="icon-button danger-button"
@@ -1294,6 +1392,63 @@ window.addEventListener("beforeunload", (e) => {
     </main>
   </div>
 
+  <div v-if="keyEditor" class="modal-backdrop" @click.self="keyEditor = null">
+    <section
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="编辑访问密钥"
+    >
+      <div class="panel-heading">
+        <h2>编辑访问密钥</h2>
+        <button aria-label="关闭密钥编辑" @click="keyEditor = null">
+          <AppIcon name="close" />
+        </button>
+      </div>
+      <form class="stack-form" @submit.prevent="saveKey">
+        <label
+          >调用方名称<input v-model="keyEditor.name" required maxlength="200"
+        /></label>
+        <label
+          >每分钟请求上限<input
+            v-model.number="keyEditor.rpm"
+            type="number"
+            min="1"
+            max="10000"
+            required
+        /></label>
+        <label
+          >到期时间<input
+            v-model="keyEditor.expiry_input"
+            type="datetime-local"
+            step="any"
+        /></label>
+        <label class="check-row"
+          ><input
+            v-model="keyEditor.active"
+            type="checkbox"
+          />启用访问密钥</label
+        >
+        <fieldset>
+          <legend>允许调用的策略</legend>
+          <label v-for="p in policies" :key="p.id" class="check-row"
+            ><input
+              v-model="keyEditor.policy_ids"
+              type="checkbox"
+              :value="p.id"
+            />{{ p.name }}</label
+          >
+        </fieldset>
+        <p v-if="error" class="error">{{ error }}</p>
+        <button
+          class="primary"
+          :disabled="busy || (keyEditor.active && !keyEditor.policy_ids.length)"
+        >
+          <AppIcon name="save" :size="16" />保存访问密钥
+        </button>
+      </form>
+    </section>
+  </div>
   <div v-if="creating" class="modal-backdrop" @click.self="creating = false">
     <section
       class="modal"

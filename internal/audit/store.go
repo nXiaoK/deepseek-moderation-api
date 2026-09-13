@@ -94,7 +94,7 @@ func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*s
 	defer tx.Rollback()
 	// Configuration writes are rare. Serialize them to keep reference/credential
 	// locking order consistent across channel, policy and credential operations.
-	if strings.HasPrefix(action, "policy.") || strings.HasPrefix(action, "channel.") || strings.HasPrefix(action, "credential.") {
+	if strings.HasPrefix(action, "policy.") || strings.HasPrefix(action, "channel.") || strings.HasPrefix(action, "credential.") || strings.HasPrefix(action, "key.") {
 		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274903)"); err != nil {
 			return err
 		}
@@ -319,7 +319,7 @@ func (s *Store) CredentialSecret(ctx context.Context, id string) (string, error)
 	return s.Vault.Open(raw, "credential:"+id)
 }
 func (s *Store) Keys(ctx context.Context) ([]ClientKey, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,prefix,policy_ids,rpm,active,created_at FROM client_api_keys WHERE deleted_at IS NULL ORDER BY created_at DESC")
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,prefix,policy_ids,rpm,active,created_at,revision,expires_at,last_used_at,rotated_at FROM client_api_keys WHERE deleted_at IS NULL ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +328,7 @@ func (s *Store) Keys(ctx context.Context) ([]ClientKey, error) {
 	for rows.Next() {
 		var k ClientKey
 		var raw []byte
-		if err = rows.Scan(&k.ID, &k.Name, &k.Prefix, &raw, &k.RPM, &k.Active, &k.CreatedAt); err != nil {
+		if err = rows.Scan(&k.ID, &k.Name, &k.Prefix, &raw, &k.RPM, &k.Active, &k.CreatedAt, &k.Revision, &k.ExpiresAt, &k.LastUsedAt, &k.RotatedAt); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(raw, &k.PolicyIDs); err != nil {
@@ -338,7 +338,11 @@ func (s *Store) Keys(ctx context.Context) ([]ClientKey, error) {
 	}
 	return keys, rows.Err()
 }
-func (s *Store) CreateKey(ctx context.Context, actor, name string, ids []string, rpm int) (string, error) {
+func (s *Store) CreateKey(ctx context.Context, actor, name string, ids []string, rpm int, expires ...*time.Time) (string, error) {
+	var expiry *time.Time
+	if len(expires) > 0 {
+		expiry = expires[0]
+	}
 	token := randomToken("dsa_")
 	id := randomToken("key_")
 	raw, _ := json.Marshal(ids)
@@ -352,14 +356,14 @@ func (s *Store) CreateKey(ctx context.Context, actor, name string, ids []string,
 				return problem(400, "invalid_policy", "所选策略不存在")
 			}
 		}
-		_, err := tx.ExecContext(ctx, "INSERT INTO client_api_keys(id,name,prefix,token_hash,policy_ids,rpm) VALUES($1,$2,$3,$4,$5,$6)", id, name, token[:12], digest(token), string(raw), rpm)
+		_, err := tx.ExecContext(ctx, "INSERT INTO client_api_keys(id,name,prefix,token_hash,policy_ids,rpm,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)", id, name, token[:12], digest(token), string(raw), rpm, expiry)
 		return err
 	})
 	return token, err
 }
 func (s *Store) RevokeKey(ctx context.Context, actor, id string) error {
 	return s.mutate(ctx, actor, "key.revoke", id, func(tx *sql.Tx) error {
-		r, err := tx.ExecContext(ctx, "UPDATE client_api_keys SET active=FALSE WHERE id=$1 AND deleted_at IS NULL", id)
+		r, err := tx.ExecContext(ctx, "UPDATE client_api_keys SET active=FALSE,revision=revision+1 WHERE id=$1 AND deleted_at IS NULL", id)
 		if err != nil {
 			return err
 		}
@@ -373,7 +377,7 @@ func (s *Store) RevokeKey(ctx context.Context, actor, id string) error {
 func (s *Store) AuthenticateKey(ctx context.Context, token string) (ClientKey, error) {
 	var k ClientKey
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, "SELECT id,name,policy_ids,rpm FROM client_api_keys WHERE token_hash=$1 AND active=TRUE AND deleted_at IS NULL", digest(token)).Scan(&k.ID, &k.Name, &raw, &k.RPM)
+	err := s.DB.QueryRowContext(ctx, `WITH candidate AS MATERIALIZED (SELECT id,name,policy_ids,rpm,revision FROM client_api_keys WHERE token_hash=$1 AND active=TRUE AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>NOW())), touched AS (UPDATE client_api_keys SET last_used_at=NOW() WHERE id IN (SELECT id FROM candidate) AND (last_used_at IS NULL OR last_used_at<NOW()-INTERVAL '1 minute')) SELECT id,name,policy_ids,rpm,revision FROM candidate`, digest(token)).Scan(&k.ID, &k.Name, &raw, &k.RPM, &k.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return k, problem(401, "invalid_api_key", "审核服务访问密钥无效")
 	}
