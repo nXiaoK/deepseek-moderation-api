@@ -58,7 +58,12 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	if cfg.ProviderID() == ProviderGrok {
 		return e.assessGrok(ctx, cfg, key, input, images...)
 	}
-	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "temperature": 0, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	// Sampling controls are optional and some third-party model backends reject
+	// them even at zero. Keep the existing setting only for official DeepSeek.
+	if cfg.officialPricing() {
+		payload["temperature"] = 0
+	}
 	if len(images) > 0 {
 		content := []map[string]any{{"type": "text", "text": "<user_input>" + input + "</user_input>"}}
 		for _, image := range images {

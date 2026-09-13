@@ -101,7 +101,6 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 	payload := map[string]any{
 		"model":             cfg.Model,
 		"stream":            true,
-		"temperature":       0,
 		"max_output_tokens": cfg.MaxTokens,
 		"instructions":      cfg.Prompt,
 		"input":             "<user_input>" + input + "</user_input>",

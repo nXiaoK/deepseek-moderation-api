@@ -578,7 +578,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, index)
 }
 
-var secretPattern = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]+|bearer\s+[^\s]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b\d{11,}\b)`)
+var secretPattern = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]+|dsa_[a-z0-9_-]+|bearer\s+[^\s]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b\d{11,}\b)`)
 
 func redact(s string) string { return secretPattern.ReplaceAllString(s, "[隐去]") }
 

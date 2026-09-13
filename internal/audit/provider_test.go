@@ -160,6 +160,9 @@ func TestGrokRequestUsesOrdinaryAPIKeyAndStreamingResponses(t *testing.T) {
 		if _, ok := req["thinking"]; ok {
 			t.Fatal("DeepSeek parameter sent to Grok")
 		}
+		if _, ok := req["temperature"]; ok {
+			t.Fatal("optional temperature sent to a Responses upstream")
+		}
 		reasoning, _ := req["reasoning"].(map[string]any)
 		if reasoning == nil || reasoning["effort"] != "none" {
 			t.Fatal("audit calls must disable Grok reasoning", req["reasoning"])

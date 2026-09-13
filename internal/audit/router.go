@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type ChannelHealth struct {
@@ -65,7 +68,40 @@ func classifyUpstream(res *http.Response) error {
 		e.Message = "模型名称或参数不受支持，请修正后重新保存通道"
 		e.permanent = true
 	}
+	if detail := upstreamErrorDetail(res); detail != "" {
+		e.Message += fmt.Sprintf("（HTTP %d：%s）", res.StatusCode, detail)
+	}
 	return e
+}
+
+// Only retain the structured error message, never a raw response or HTML page.
+// Upstreams may echo credentials in errors; redact before returning or storing.
+func upstreamErrorDetail(res *http.Response) string {
+	if res.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 8193))
+	if err != nil || len(body) > 8192 {
+		return ""
+	}
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	message := payload.Error.Message
+	if message == "" {
+		message = payload.Detail
+	}
+	message = strings.Join(strings.Fields(storedModelOutput(message)), " ")
+	if utf8.RuneCountInString(message) > 512 {
+		message = string([]rune(message)[:512]) + "…"
+	}
+	return message
 }
 func (e *Engine) resetChannel(id string) {
 	e.routeMu.Lock()
