@@ -173,8 +173,10 @@ export async function api<T>(
   path: string,
   method = "GET",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch(path, {
+    signal,
     method,
     credentials: "same-origin",
     headers: {
@@ -189,6 +191,23 @@ export async function api<T>(
   if (!response.ok)
     throw new APIError(response.status, data.error?.message || "请求失败");
   return data as T;
+}
+export async function downloadFile(
+  path: string,
+  filename: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(path, { credentials: "same-origin", signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new APIError(response.status, body?.error?.message || "下载失败");
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export interface Usage {

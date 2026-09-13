@@ -49,6 +49,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer app.Close()
+	if err := store.RecoverEvaluations(startup); err != nil {
+		return err
+	}
 	server := &http.Server{Addr: env("LISTEN_ADDR", "127.0.0.1:8090"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 40 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	go app.CleanupLoop(ctx)
 	stopped := make(chan error, 1)

@@ -225,6 +225,7 @@ label small {
   min-height: 100vh;
 }
 .sidebar {
+  overflow-y: auto;
   width: 220px;
   background: #f8f9fc;
   border-right: 1px solid var(--border);
@@ -1186,9 +1187,7 @@ td small {
     width: 230px;
     transform: translateX(-100%);
     visibility: hidden;
-    transition:
-      transform 0.2s,
-      visibility 0.2s;
+    transition: transform 0.2s;
   }
   .sidebar.is-open {
     transform: translateX(0);

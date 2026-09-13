@@ -102,6 +102,11 @@ func (s *Store) mutate(ctx context.Context, actor, action, id string, fn func(*s
 			return err
 		}
 	}
+	if strings.HasPrefix(action, "evaluation.sample.") {
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274907)"); err != nil {
+			return err
+		}
+	}
 	if err = fn(tx); err != nil {
 		return err
 	}
@@ -533,6 +538,9 @@ func (s *Store) Overview(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"requests": count, "flagged": hits, "errors": fail, "tokens": tokens, "avg_latency_ms": avg, "p95_latency_ms": p95}, err
 }
 func (s *Store) Cleanup(ctx context.Context) error {
+	if _, err := s.DB.ExecContext(ctx, "DELETE FROM evaluation_runs WHERE created_at<NOW()-INTERVAL '90 days' AND status NOT IN ('queued','running')"); err != nil {
+		return err
+	}
 	if _, err := s.DB.ExecContext(ctx, `UPDATE audit_requests SET output_cipher=NULL,output_expires_at=NULL,metadata=jsonb_set(metadata,'{model_output_stored}','false'::jsonb) WHERE output_cipher IS NOT NULL AND output_expires_at<NOW()`); err != nil {
 		return err
 	}

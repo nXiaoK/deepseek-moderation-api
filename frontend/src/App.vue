@@ -39,6 +39,9 @@ import {
 const AnalyticsPanel = defineAsyncComponent(
   () => import("./AnalyticsPanel.vue"),
 );
+const EvaluationPanel = defineAsyncComponent(
+  () => import("./EvaluationPanel.vue"),
+);
 const user = ref(""),
   initializing = ref(true),
   busy = ref(false),
@@ -130,6 +133,7 @@ const nav = [
   ["overview", "运行概览", "overview"],
   ["analytics", "数据分析", "chart"],
   ["logs", "审核记录", "file"],
+  ["evaluations", "审核评测", "flask"],
   ["policies", "审核策略", "shield"],
   ["channels", "审核模型", "cpu"],
   ["credentials", "连接密钥", "link"],
@@ -141,6 +145,7 @@ const pageMeta: Record<string, [string, string]> = {
   overview: ["OVERVIEW", "过去 24 小时 · 正式请求"],
   analytics: ["ANALYTICS", "模型用量与性能"],
   logs: ["AUDIT LOGS", "审核请求与判定记录"],
+  evaluations: ["EVALUATIONS", "标注样本与模型对照"],
   policies: ["POLICIES", "当前生效的规则与模型调度"],
   channels: ["MODEL CHANNELS", "模型连接与运行状态"],
   credentials: ["CONNECTIONS", "上游模型访问凭证"],
@@ -743,6 +748,16 @@ window.addEventListener("beforeunload", (e) => {
           "
         />
 
+        <EvaluationPanel
+          v-if="page === 'evaluations'"
+          :policies="policies"
+          :channels="channels"
+          @log="openLog"
+          @unauthorized="
+            user = '';
+            setCSRF('');
+          "
+        />
         <AnalyticsPanel
           v-if="page === 'analytics'"
           :policies="policies"

@@ -18,20 +18,27 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 type Server struct {
-	Store         *Store
-	Engine        *Engine
-	Origin        string
-	Secure        bool
-	StaticDir     string
-	dummyPassword string
-	Runtime       RuntimeConfig
-	admission     requestAdmission
-	trialSlots    chan struct{}
+	Store             *Store
+	Engine            *Engine
+	Origin            string
+	Secure            bool
+	StaticDir         string
+	dummyPassword     string
+	Runtime           RuntimeConfig
+	admission         requestAdmission
+	trialSlots        chan struct{}
+	backgroundContext context.Context
+	stopBackground    context.CancelFunc
+	evaluationMu      sync.Mutex
+	evaluationCancels map[string]context.CancelFunc
+	evaluationWorkers sync.WaitGroup
+	closing           bool
 }
 type session struct {
 	Username  string
@@ -60,7 +67,15 @@ func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency)}, nil
+	background, stop := context.WithCancel(context.Background())
+	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop}, nil
+}
+func (s *Server) Close() {
+	s.evaluationMu.Lock()
+	s.closing = true
+	s.stopBackground()
+	s.evaluationMu.Unlock()
+	s.evaluationWorkers.Wait()
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -106,6 +121,18 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/audit-logs", s.logs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
 	admin("GET /admin/analytics", s.analytics)
+	admin("GET /admin/evaluation/samples", s.evaluationSamples)
+	admin("GET /admin/evaluation/samples/{id}", s.evaluationSample)
+	admin("POST /admin/evaluation/samples", s.saveEvaluationSample)
+	admin("PUT /admin/evaluation/samples/{id}", s.saveEvaluationSample)
+	admin("DELETE /admin/evaluation/samples/{id}", s.deleteEvaluationSample)
+	admin("POST /admin/evaluation/samples/import", s.importEvaluationSamples)
+	admin("GET /admin/evaluation/runs", s.evaluationRuns)
+	admin("POST /admin/evaluation/runs", s.createEvaluationRun)
+	admin("GET /admin/evaluation/runs/{id}", s.evaluationRunDetail)
+	admin("GET /admin/evaluation/runs/{id}/samples/{sample}", s.evaluationRunSample)
+	admin("GET /admin/evaluation/runs/{id}/export", s.exportEvaluation)
+	admin("POST /admin/evaluation/runs/{id}/cancel", s.cancelEvaluation)
 	admin("GET /admin/overview", func(w http.ResponseWriter, r *http.Request) error {
 		data, err := s.Store.Overview(r.Context())
 		if err != nil {

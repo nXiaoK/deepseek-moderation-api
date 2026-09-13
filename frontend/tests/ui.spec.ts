@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { analytics, mockAPI } from "./fixtures";
+import { analytics, mockAPI, config } from "./fixtures";
 
 async function navigate(page: Page, name: string) {
   await expect(page.locator(".app-shell")).toBeVisible();
@@ -198,6 +198,7 @@ for (const width of [1440, 768, 390, 320]) {
       "审核记录",
       "成本与预算",
       "系统设置",
+      "审核评测",
       "数据分析",
     ]) {
       await navigate(page, name);
@@ -640,6 +641,171 @@ test("analytics dimensions carry into audit log drilldown", async ({
   await expect(
     page.getByRole("heading", { name: "审核记录", level: 1 }),
   ).toBeVisible();
+});
+
+test("evaluation workbench starts a bounded comparison and exports results", async ({
+  page,
+}, testInfo) => {
+  let started = false;
+  const run = {
+    id: "eval-1",
+    name: "回归对照",
+    policy_name: "默认内容审核",
+    status: "completed",
+    total: 1,
+    completed: 1,
+    max_cost_cny: "5",
+    message: "",
+    created_at: "2026-09-14T00:00:00Z",
+  };
+  const detail = {
+    run,
+    config,
+    policy_revision: 1,
+    targets: { "": "按策略调度" },
+    scores: [
+      {
+        target: "",
+        total: 1,
+        processed: 1,
+        valid: 1,
+        errors: 0,
+        labelled: 1,
+        correct: 1,
+        allow_samples: 1,
+        flagged_samples: 0,
+        false_positives: 0,
+        false_negatives: 0,
+        unstable_samples: 0,
+        average_latency_ms: 500,
+        known_cost_cny: "0.00012",
+        pending_costs: 0,
+      },
+    ],
+    results: [
+      {
+        sequence: 0,
+        sample_id: "sample-1",
+        sample_name: "正常问候",
+        target: "",
+        iteration: 1,
+        expected: "allow",
+        status: "completed",
+        request_id: "audit-1",
+        model: "deepseek-v3.2",
+        confidence: 0.1,
+        flagged: false,
+        threshold: 0.8,
+        reason: "ok",
+        error_code: "",
+        error_message: "",
+        latency_ms: 500,
+      },
+    ],
+  };
+  await page.route("**/admin/evaluation/runs", (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      expect(body.sample_ids).toEqual(["sample-1"]);
+      expect(body.max_cost_cny).toBe("5");
+      expect(body.config.prompt).toBe(config.prompt);
+      started = true;
+      return route.fulfill({ status: 201, json: { id: "eval-1" } });
+    }
+    return route.fulfill({ json: started ? [run] : [] });
+  });
+  await page.route("**/admin/evaluation/runs/eval-1", (route) =>
+    route.fulfill({ json: detail }),
+  );
+  await page.route(
+    "**/admin/evaluation/runs/eval-1/samples/sample-1",
+    (route) =>
+      route.fulfill({
+        json: {
+          id: "sample-1",
+          name: "正常问候",
+          input: "评测时的原始样本",
+          expected: "allow",
+          note: "正常文本",
+          revision: 1,
+        },
+      }),
+  );
+  await page.route("**/admin/evaluation/runs/eval-1/export", (route) =>
+    route.fulfill({
+      contentType: "text/csv",
+      body: "sample,score\nhello,0.1\n",
+    }),
+  );
+  await page.goto("/");
+  await navigate(page, "审核评测");
+  await page
+    .getByRole("checkbox", { name: "选择 正常问候", exact: true })
+    .check();
+  await page.getByRole("button", { name: "运行评测", exact: true }).click();
+  await page.getByLabel("评测名称", { exact: true }).fill("回归对照");
+  await page.getByRole("button", { name: "开始评测", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "通道对比", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "回归对照", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("evaluation-desktop.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "正常问候", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "评测样本快照" }),
+  ).toContainText("评测时的原始样本");
+  await page.getByRole("button", { name: "关闭样本快照" }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出评测 CSV", exact: true }).click();
+  expect((await download).suggestedFilename()).toBe("evaluation-eval-1.csv");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".sidebar")).toBeHidden();
+  await page.screenshot({
+    path: testInfo.outputPath("evaluation-mobile.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth - innerWidth,
+    ),
+  ).toBeLessThanOrEqual(1);
+});
+
+test("evaluation samples can be edited and imported without starting a run", async ({
+  page,
+}) => {
+  let saved = false,
+    imported = false;
+  await page.route("**/admin/evaluation/samples/sample-1", (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const body = route.request().postDataJSON();
+    expect(body.expected_revision).toBe(1);
+    expect(body.input).toBe("更新后的样本");
+    saved = true;
+    return route.fulfill({ json: { id: "sample-1" } });
+  });
+  await page.route("**/admin/evaluation/samples/import", (route) => {
+    expect(route.request().postDataJSON().builtin).toBe(true);
+    imported = true;
+    return route.fulfill({ json: { imported: 48 } });
+  });
+  await page.goto("/");
+  await navigate(page, "审核评测");
+  await page
+    .getByRole("button", { name: "编辑 正常问候", exact: true })
+    .click();
+  await page.getByLabel("样本内容", { exact: true }).fill("更新后的样本");
+  await page.getByRole("button", { name: "保存样本", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(saved).toBe(true);
+  await page.getByRole("button", { name: "导入内置样本", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已导入 48 条");
+  expect(imported).toBe(true);
 });
 
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {

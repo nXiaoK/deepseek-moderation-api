@@ -235,6 +235,31 @@ export async function mockAPI(page: Page) {
       "/admin/credentials": credentials,
       "/admin/api-keys": keys,
       "/admin/model-channels": channels,
+      "/admin/evaluation/samples": [
+        {
+          id: "sample-1",
+          name: "正常问候",
+          expected: "allow",
+          note: "正常文本",
+          revision: 1,
+        },
+        {
+          id: "sample-2",
+          name: "边界样本",
+          expected: "manual",
+          note: "待人工判断",
+          revision: 1,
+        },
+      ],
+      "/admin/evaluation/samples/sample-1": {
+        id: "sample-1",
+        name: "正常问候",
+        input: "你好",
+        expected: "allow",
+        note: "正常文本",
+        revision: 1,
+      },
+      "/admin/evaluation/runs": [],
       "/admin/overview": {
         requests: 2846,
         flagged: 124,

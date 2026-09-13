@@ -67,3 +67,18 @@ ALTER TABLE audit_requests ADD COLUMN IF NOT EXISTS output_expires_at TIMESTAMPT
 CREATE INDEX IF NOT EXISTS audit_output_expiry ON audit_requests(output_expires_at) WHERE output_cipher IS NOT NULL;
 ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT '';
 ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS outcome_known BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE TABLE IF NOT EXISTS evaluation_samples (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, input_cipher BYTEA NOT NULL, expected TEXT NOT NULL CHECK(expected IN ('allow','flagged','manual')),
+ note TEXT NOT NULL DEFAULT '', revision BIGINT NOT NULL DEFAULT 1, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL, policy_id TEXT NOT NULL, policy_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
+ total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0, max_cost_pico BIGINT NOT NULL, plan_cipher BYTEA NOT NULL, message TEXT NOT NULL DEFAULT '',
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), finished_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS evaluation_results (
+ run_id TEXT NOT NULL REFERENCES evaluation_runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL,
+ sample_id TEXT NOT NULL, sample_name TEXT NOT NULL, target TEXT NOT NULL, iteration INTEGER NOT NULL, expected TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending', payload JSONB NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,sequence)
+);
+CREATE INDEX IF NOT EXISTS evaluation_runs_created ON evaluation_runs(created_at DESC);
