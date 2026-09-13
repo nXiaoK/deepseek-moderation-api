@@ -154,13 +154,13 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	if !result.Results[0].Flagged || result.Results[0].Audit.PolicyVersion < 1 {
 		t.Fatal("threshold equality or revision incorrect")
 	}
-	// Match the existing sub2api custom_audit validation contract without
-	// importing or modifying the sub2api project.
+	// Exercise the stock sub2api contract without importing or modifying it.
 	item := result.Results[0]
 	meta := item.Audit
-	if result.ID == "" || result.Model != "abuse-audit-v1" || len(result.Results) != 1 || meta.SchemaVersion != 1 || meta.PolicyID != "abuse-default" || meta.PolicyVersion < 1 || item.Flagged != (meta.Confidence >= meta.Threshold) || len(item.Categories) != 1 || len(item.Scores) != 1 || item.Categories["custom_policy"] != item.Flagged || item.Scores["custom_policy"] != meta.Confidence {
+	if result.ID == "" || result.Model != "abuse-audit-v1" || len(result.Results) != 1 || meta.SchemaVersion != 1 || meta.PolicyID != "abuse-default" || meta.PolicyVersion < 1 || item.Flagged != (meta.Confidence >= meta.Threshold) || len(item.Categories) != 1 || len(item.Scores) != 1 || !item.Categories["illicit"] || item.Scores["illicit"] != 1 || meta.Confidence != .8 {
 		t.Fatal("sub2api response contract broken", result)
 	}
+	assertStockSub2APIDecision(t, response, true)
 	mu.Lock()
 	if sentPrompt != InitialPrompt {
 		t.Fatal("initial prompt was rewritten")
@@ -175,6 +175,7 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	if result.Results[0].Flagged {
 		t.Fatal("save did not activate current settings")
 	}
+	assertStockSub2APIDecision(t, response, false)
 	// Unsaved preview must not change production.
 	preview := p.Config
 	preview.Threshold = .7
@@ -184,6 +185,7 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	if result.Results[0].Flagged {
 		t.Fatal("preview changed production")
 	}
+	assertStockSub2APIDecision(t, response, false)
 	for _, endpoint := range []string{"publish", "rollback", "versions"} {
 		method := "POST"
 		if endpoint == "versions" {

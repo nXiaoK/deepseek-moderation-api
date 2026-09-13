@@ -4,7 +4,14 @@ import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
-import { auditError, formatModelOutput, lastModelOutput } from "./auditDisplay";
+import {
+  auditError,
+  auditStage,
+  auditResult,
+  auditInput,
+  formatModelOutput,
+  lastModelOutput,
+} from "./auditDisplay";
 import {
   api,
   APIError,
@@ -808,8 +815,15 @@ window.addEventListener("beforeunload", (e) => {
           <section class="panel integration-note">
             <h2>sub2api 接入</h2>
             <p>
-              选择“自定义审核服务”，Base URL
-              填写本系统服务地址；使用此处创建的访问密钥，模型名填写策略别名。
+              在原版 sub2api 的内容审计设置中，将 Base URL
+              填写为本系统根地址（不加
+              /v1）；使用此处创建的访问密钥，模型名填写策略别名。
+            </p>
+            <p>
+              运行模式选择“前置拦截”。本服务将命中结果通过 illicit
+              分类传递，命中分数为 100%，未命中为
+              0%；真实评分和原因在本服务的审核记录中查看。 sub2api
+              分类阈值保持大于 0（可沿用默认值）。
             </p>
             <code
               >POST /v1/moderations · model:
@@ -832,7 +846,7 @@ window.addEventListener("beforeunload", (e) => {
                   <option value="">全部</option>
                   <option value="flagged">命中</option>
                   <option value="allow">未命中</option>
-                  <option value="error">审核失败</option>
+                  <option value="error">失败 / 拒绝</option>
                 </select></label
               ><label
                 >策略<select v-model="logPolicy">
@@ -873,13 +887,18 @@ window.addEventListener("beforeunload", (e) => {
                       }}<small>{{
                         l.kind === "test"
                           ? "后台试跑"
-                          : clientLabel(l.client_id)
+                          : l.client_id
+                            ? clientLabel(l.client_id)
+                            : "未通过身份验证"
                       }}</small>
                     </td>
                     <td>
-                      {{ policyLabel(l.policy_id)
+                      {{
+                        l.policy_id
+                          ? policyLabel(l.policy_id)
+                          : l.request?.model || "未确定策略"
                       }}<small>{{
-                        `${l.model} · ${l.attempt_count} 次调用`
+                        `${l.model || l.request?.model || "未调用模型"} · ${l.attempt_count} 次调用`
                       }}</small>
                     </td>
                     <td>
@@ -888,9 +907,7 @@ window.addEventListener("beforeunload", (e) => {
                         :class="
                           l.error_code ? 'amber' : l.flagged ? 'red' : 'green'
                         "
-                        >{{
-                          l.error_code ? "失败" : l.flagged ? "命中" : "未命中"
-                        }}</span
+                        >{{ auditResult(l) }}</span
                       >
                     </td>
                     <td>
@@ -904,6 +921,10 @@ window.addEventListener("beforeunload", (e) => {
                           ? auditError(l.error_code, l.error_message)
                           : l.reason || "—"
                       }}
+                      <small v-if="l.request"
+                        >HTTP {{ l.request.http_status }} ·
+                        {{ auditStage(l.request.stage) }}</small
+                      >
                     </td>
                     <td>{{ l.latency_ms }} ms</td>
                     <td>
@@ -1032,13 +1053,27 @@ window.addEventListener("beforeunload", (e) => {
       <dl class="detail-grid">
         <dt>请求 ID</dt>
         <dd>{{ detail.id }}</dd>
+        <template v-if="detail.request">
+          <dt>请求接口</dt>
+          <dd>{{ detail.request.method }} {{ detail.request.path }}</dd>
+          <dt>请求模型 / 策略别名</dt>
+          <dd>{{ detail.request.model || "未读取" }}</dd>
+          <dt>HTTP 状态 / 处理阶段</dt>
+          <dd>
+            {{ detail.request.http_status }} ·
+            {{ auditStage(detail.request.stage) }}
+          </dd>
+          <dt>输入概况</dt>
+          <dd>{{ auditInput(detail) }}</dd>
+        </template>
         <dt>策略</dt>
         <dd>
-          {{ policyLabel(detail.policy_id) }} ·
+          {{ detail.policy_id ? policyLabel(detail.policy_id) : "未确定策略" }}
+          ·
           {{ `${detail.attempt_count} 次调用` }}
         </dd>
-        <dt>模型</dt>
-        <dd>
+        <dt>审核模型</dt>
+        <dd v-if="detail.model">
           {{
             detail.provider === "grok_via_sub2api"
               ? "Grok / sub2api"
@@ -1046,6 +1081,7 @@ window.addEventListener("beforeunload", (e) => {
           }}
           · {{ detail.model }}
         </dd>
+        <dd v-else>未调用模型</dd>
         <dt v-if="detail.usage.actual_model">实际响应模型</dt>
         <dd v-if="detail.usage.actual_model">
           {{ detail.usage.actual_model }}
@@ -1056,12 +1092,13 @@ window.addEventListener("beforeunload", (e) => {
         </dd>
         <dt>判定</dt>
         <dd>
-          {{
-            detail.error_code ? "审核失败" : detail.flagged ? "命中" : "未命中"
-          }}
+          {{ auditResult(detail) }}
         </dd>
         <dt>评分 / 阈值</dt>
-        <dd>{{ detail.confidence ?? "—" }} / {{ detail.threshold }}</dd>
+        <dd>
+          {{ detail.confidence ?? "—" }} /
+          {{ detail.policy_id ? detail.threshold : "—" }}
+        </dd>
         <dt>原因或错误</dt>
         <dd>
           {{
@@ -1106,10 +1143,30 @@ window.addEventListener("beforeunload", (e) => {
         <p v-else class="hint">此请求没有保存模型返回内容。</p>
       </template>
       <h3>审核输入</h3>
+      <p v-if="detail.request?.image_count" class="hint">
+        请求包含
+        {{
+          detail.request.image_count
+        }}
+        张图片。此处仅保留图片数量和按策略保存的文本，不保存图片内容或地址。
+      </p>
+      <p
+        v-if="detail.request && detail.request.text_chars > 64000"
+        class="hint"
+      >
+        请求文本超过 64000 字；开启输入保存时最多保留前 64000 字。
+      </p>
       <pre v-if="detail.input_stored" class="input-detail">{{
         detail.input
       }}</pre>
-      <p v-else class="hint">此请求未保存输入原文。</p>
+      <p v-else-if="detail.request && !detail.policy_id" class="hint">
+        此请求在确认可用策略前已失败或被拒绝，仅保留请求信息与错误原因。
+      </p>
+      <p v-else class="hint">
+        此请求审核时未开启“加密保存输入原文”，原文未留存，无法恢复。
+        可在“审核策略 →
+        审核规则”中开启并点击“保存并生效”；仅对后续请求生效，缓存命中的请求也会保存。
+      </p>
     </section>
   </div>
 </template>

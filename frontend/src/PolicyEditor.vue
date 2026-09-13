@@ -99,7 +99,10 @@ async function test() {
           max="1"
           step="0.01"
           :disabled="busy"
-        /><small>评分 ≥ 阈值时命中。</small></label
+        /><small
+          >评分 ≥ 阈值时命中。sub2api 接收命中 100% / 未命中
+          0%，真实评分在本后台查看。</small
+        ></label
       >
     </div>
     <label
@@ -141,7 +144,7 @@ async function test() {
         :disabled="busy"
       /><span
         >加密保存输入原文<small
-          >管理员可在审核记录中查看，到期自动清理。</small
+          >保存并生效后，新请求（含缓存命中）会保存完整输入，管理员可在审核记录中查看；旧记录不会补存，到期自动清理。</small
         ></span
       ></label
     >

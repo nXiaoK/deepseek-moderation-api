@@ -105,6 +105,16 @@ export interface AuditResponse {
   }[];
 }
 export interface AuditLog {
+  request?: {
+    method: string;
+    path: string;
+    model?: string;
+    stage: string;
+    http_status: number;
+    input_type?: string;
+    text_chars: number;
+    image_count: number;
+  };
   error_message?: string;
   channel_id: string;
   attempt_count: number;

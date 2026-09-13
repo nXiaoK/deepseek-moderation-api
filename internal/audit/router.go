@@ -241,8 +241,15 @@ func (s *Store) requestCost(ctx context.Context, id string) (*CostView, error) {
 func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string) (Response, error) {
 	id := randomToken("audit_")
 	start := time.Now()
+	a, _ := ctx.Value(requestAuditKey{}).(*requestAudit)
+	if a != nil {
+		id, start = a.log.ID, a.log.CreatedAt
+	}
 	response := Response{ID: id, Model: p.Alias, Usage: Usage{Reported: true}}
 	log := AuditLog{ID: id, Kind: kind, PolicyID: p.ID, ClientID: client, Threshold: p.Config.Threshold, InputStored: p.Config.StoreInput, CreatedAt: start.UTC(), Attempts: []AuditAttempt{}}
+	if a != nil {
+		log.Request = a.log.Request
+	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.Config.TotalTimeoutMS)*time.Millisecond)
 	defer cancel()
 	result, err := s.executeRoute(callCtx, p, channels, client, kind, input, onlyChannel, &response, &log)
@@ -266,21 +273,36 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	log.Provider = response.Provider
 	log.Model = response.ActualModel
 	log.CacheHit = response.CacheHit
+	var verdict Result
 	if err == nil {
+		verdict = moderationResult(p, result)
 		log.Confidence = &result.Confidence
-		log.Flagged = result.Confidence >= p.Config.Threshold
-		log.Reason = redactReason(result.Reason)
+		log.Flagged = verdict.Flagged
+		log.Reason = verdict.Audit.Reason
 	} else {
 		log.ErrorCode = errorCode(err)
 		log.ErrorMessage = storedAuditError(err)
 	}
+	if a != nil {
+		log.Request.HTTPStatus = auditHTTPStatus(err)
+		if err == nil {
+			log.Request.Stage = "completed"
+		}
+		a.log, a.input, a.days = log, input, p.Config.RetentionDays
+	}
 	if recordErr := s.Store.Record(finishCtx, log, input, p.Config.RetentionDays); recordErr != nil {
+		if a != nil {
+			a.log.Request.Stage = "recording"
+		}
 		return response, problem(503, "record_unavailable", "审核记录暂时无法保存")
+	}
+	if a != nil {
+		a.recorded = true
 	}
 	if err != nil {
 		return response, err
 	}
-	response.Results = []Result{{Flagged: log.Flagged, Categories: map[string]bool{"custom_policy": log.Flagged}, Scores: map[string]float64{"custom_policy": result.Confidence}, Audit: AuditMetadata{1, p.ID, int(p.Revision), result.Confidence, p.Config.Threshold, log.Reason}}}
+	response.Results = []Result{verdict}
 	if kind == "test" {
 		response.Attempts = log.Attempts
 	}

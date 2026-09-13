@@ -151,7 +151,7 @@ func uniqueValue(d *json.Decoder, depth int) error {
 	return err
 }
 
-// MaxReasonRunes matches the existing sub2api custom_audit response contract.
+// MaxReasonRunes bounds model explanations in audit metadata and stored logs.
 const MaxReasonRunes = 80
 
 func ParseAssessment(raw []byte) (Assessment, error) {

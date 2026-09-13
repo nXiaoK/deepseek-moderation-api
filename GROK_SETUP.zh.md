@@ -66,4 +66,4 @@ Accept: text/event-stream
 
 该实现使用新的当前配置及模型通道表结构，不迁移旧开发数据。使用空数据库初始化。本次仅更改独立审核项目，不修改 sub2api 的代码、数据库或部署。
 
-对外仍返回 `model=策略别名`、`results[0].flagged`、`categories.custom_policy`、`category_scores.custom_policy` 以及兼容的 audit 元数据。保留 `schema_version=1` 和正整数 `policy_version` 供现有 sub2api 校验，后台不提供策略版本管理。
+对外适配原版 sub2api：`model=策略别名`，`results[0].flagged` 为策略判定，`categories.illicit` 同步判定，`category_scores.illicit` 在命中时为 1、未命中时为 0。`illicit` 仅作为原版内置分类的兼容载体；真实评分、阈值和原因保留在 `audit` 元数据及本服务后台。原版 sub2api 忽略 `audit`，无需 `custom_audit` 代码。接入配置与前置 Hash 缓存等限制见 [README](README.md#sub2api-接入)。

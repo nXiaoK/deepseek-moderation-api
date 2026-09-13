@@ -106,7 +106,7 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /admin/billing/costs/{id}/reconcile", s.reconcileCost)
 	admin("GET /admin/billing/budgets", s.budgets)
 	admin("PUT /admin/api-keys/{id}/budget", s.saveBudget)
-	mux.HandleFunc("POST /v1/moderations", s.wrap(s.moderate))
+	mux.HandleFunc("POST /v1/moderations", s.wrap(s.auditModeration(s.moderate)))
 	mux.HandleFunc("GET /v1/models", s.wrap(s.models))
 	mux.HandleFunc("/", s.static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,10 +431,13 @@ func (s *Server) client(r *http.Request) (ClientKey, error) {
 	return s.Store.AuthenticateKey(r.Context(), strings.TrimPrefix(header, "Bearer "))
 }
 func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
+	a := r.Context().Value(requestAuditKey{}).(*requestAudit)
 	k, err := s.client(r)
 	if err != nil {
 		return err
 	}
+	a.log.ClientID = k.ID
+	a.log.Request.Stage = "rate_limit"
 	ok, err := s.Store.Rate(r.Context(), "api:"+k.ID, k.RPM)
 	if err != nil {
 		return err
@@ -446,13 +449,13 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 		Model string          `json:"model"`
 		Input json.RawMessage `json:"input"`
 	}
+	a.log.Request.Stage = "request_validation"
 	if err = readJSON(w, r, &in); err != nil {
 		return err
 	}
-	text, err := parseText(in.Input)
-	if err != nil {
-		return err
-	}
+	a.log.Request.Model = storedModelOutput(in.Model)
+	a.describeInput(in.Input)
+	a.log.Request.Stage = "policy_check"
 	p, err := s.Store.PolicyByAlias(r.Context(), in.Model)
 	if err != nil {
 		return err
@@ -460,6 +463,18 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	if !slices.Contains(k.PolicyIDs, p.ID) {
 		return problem(403, "policy_forbidden", "该密钥无权调用此策略")
 	}
+	a.log.PolicyID, a.log.Threshold = p.ID, p.Config.Threshold
+	a.log.InputStored, a.days = p.Config.StoreInput, p.Config.RetentionDays
+	a.log.Request.Stage = "input_validation"
+	if a.log.Request.ImageCount > 0 {
+		return problem(400, "unsupported_input", "当前策略只支持文本审核，请求包含图片，尚未调用审核模型")
+	}
+	text, err := parseText(in.Input)
+	if err != nil {
+		return err
+	}
+	a.input = text
+	a.log.Request.Stage = "policy_check"
 	p, channels, err := s.Store.RouteSnapshot(r.Context(), p.ID, nil)
 	if err != nil {
 		return err
@@ -467,6 +482,7 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	if !p.Enabled {
 		return problem(503, "policy_unavailable", "审核策略已停用")
 	}
+	a.log.Request.Stage = "audit"
 	res, err := s.runAudit(r.Context(), p, channels, k.ID, "production", text, "")
 	w.Header().Set("X-Audit-Request-ID", res.ID)
 	if err != nil {

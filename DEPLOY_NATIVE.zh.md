@@ -236,18 +236,21 @@ PUBLIC_URL=https://audit.example.com
 
 ## 9. sub2api 连接设置
 
-sub2api 需运行包含 `custom_audit` 适配的版本。只部署本审核服务不会自动升级 sub2api。
+兼容原版 sub2api 的内容审计接口，只需更新本审核服务并配置原有内容审计设置，无需修改 sub2api 代码。
 
 | 项目 | 填写值 |
 | --- | --- |
-| 审核服务类型 | 自定义审核服务 |
+| 运行模式 | 前置拦截 |
 | Base URL | 同机原生运行：`http://127.0.0.1:8090`；跨服务器：`https://audit.example.com` |
 | 模型名 | `abuse-audit-v1`，或后台自定义策略别名 |
 | API Key | 本审核后台生成的调用方密钥 |
-| HTTP 超时 | 初始 10000 ms，按实际延迟调整 |
+| HTTP 超时 | 初始 15000 ms，需覆盖策略总调用时限及约 5 秒收尾时间 |
 | 重试次数 | 初始 0 |
+| 分类阈值 | 沿用默认值；所有分类须大于 0 |
 
 Base URL 不加 `/v1` 或 `/v1/moderations`。如果 sub2api 在容器里运行，其 `127.0.0.1` 指向容器自身，应使用可达的 HTTPS 域名。
+
+本服务把策略命中映射为 `category_scores.illicit=1`，未命中映射为 `0`；真实评分和原因在本服务后台及 `audit` 扩展字段中保留。sub2api 日志显示的 100% 是兼容判定信号。原版的采样、分组范围、关键词和前置 Hash 缓存仍然生效，详见 [sub2api 接入说明](README.md#sub2api-接入)。
 
 ## 10. 更新与备份
 

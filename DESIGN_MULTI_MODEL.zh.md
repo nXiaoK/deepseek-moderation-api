@@ -143,13 +143,11 @@
 
 ### 对外协议兼容
 
-已确认 sub2api 的 `backend/internal/service/content_moderation_custom.go` 强制要求 `schema_version=1` 且 `policy_version>=1`。直接删除字段或改为 0 会让所有自定义审核结果校验失败。
+接入目标为未修改的原版 sub2api；此前依赖 `content_moderation_custom.go` / `custom_audit` 的方案已取消。原版忽略 `flagged` 和 `audit`，仅用内置分类分数比较本地阈值，因此不能依靠 `custom_policy` 传递判定。
 
-推荐分阶段处理：先删除本后台和后端的策略版本功能，兼容响应暂时保留正整数 `policy_version`，映射到自动生成的当前配置变更标识；没有历史列表或恢复能力。保留 schema_version=1，新增非敏感的实际模型、尝试次数等可选字段；请求根 model 仍是策略别名。
+审核服务先按未经舍入的 `confidence >= threshold` 计算命中，再将 `illicit` 作为兼容载体：命中分数 1，未命中分数 0。原始评分、阈值、原因及配置标识保留在 `audit` 和审核记录中；兼容分数不代表真实分类或模型置信度。所有 sub2api 分类阈值须大于 0，默认值无需调整。原版采样、分组范围、关键词和 Hash 缓存继续生效，部署说明不得承诺自动跳过这些逻辑。
 
-迁移时兼容标识从已有 active_version 起步，保存策略或修改它引用的通道时自动递增；停用策略的初始标识至少为 1，但只有有效启用策略才能正式调用。此标识只用于旧客户端兼容，不用它替代缓存中的完整配置指纹。
-
-随后如需彻底删除对外 policy_version，先让 sub2api 接受无策略版本的新协议、去掉版本展示并补充兼容测试，再切换服务端响应，最后退役兼容字段。保留响应协议 schema_version，用于解析协议，与策略版本管理无关。
+`audit.schema_version=1` 和正整数 `policy_version` 作为本服务元数据保留，原版 sub2api 不解析它们。配置标识不替代缓存中的完整配置指纹，也不提供历史恢复能力。协议回归测试使用 `origin/main` 提交 `4726bdd08b6201d426a80529b79be123a4008d20` 的原始解析类型、默认阈值和判定函数，测试夹具只放在审核服务项目中。
 
 ## 7. 费用与预算
 

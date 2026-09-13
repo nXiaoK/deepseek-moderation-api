@@ -58,7 +58,7 @@ func (c PolicyConfig) Validate() error {
 }
 
 // Policy stores only the current settings. Revision is an optimistic lock and
-// the positive policy_version required by the existing sub2api wire contract.
+// the policy_version included in our optional audit metadata.
 type Policy struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -216,6 +216,7 @@ type Response struct {
 	LatencyMS    int64          `json:"latency_ms"`
 }
 type AuditLog struct {
+	Request           *AuditRequest  `json:"request,omitempty"`
 	ErrorMessage      string         `json:"error_message,omitempty"`
 	ChannelID         string         `json:"channel_id"`
 	Attempts          []AuditAttempt `json:"attempts"`

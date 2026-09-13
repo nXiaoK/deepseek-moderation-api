@@ -4,9 +4,11 @@
 
 独立审核 API 与 Vue 管理后台。策略只保留当前配置，支持直接编辑、未保存内容试跑和“保存并生效”。模型输出 `confidence` 和 `reason`，程序使用当前请求读取的阈值决定是否命中。没有草稿、发布、版本历史或回滚功能。
 
-本次只修改审核服务，保持现有 sub2api `custom_audit` 接口约定。不提供旧开发数据库迁移；请配置新的空数据库，原数据库不会被程序自动清空。
+兼容原版 sub2api 的 OpenAI Moderations 接口，无需修改 sub2api 代码或添加审核服务类型。不提供旧开发数据库迁移；请配置新的空数据库，原数据库不会被程序自动清空。已有本项目当前表结构的实例升级本次协议适配时可沿用数据库，无需重新初始化。
 
 **部署文档：** [Docker Compose 与手动部署指南](DEPLOY.zh.md)。手动部署也可以只将 PostgreSQL 放在 Docker 中；需要原生 systemd 部署时，另见[本地打包并上传 Linux 服务器的教程](DEPLOY_NATIVE.zh.md)。
+
+**已有生产实例：** 按[更新指南](UPGRADE.zh.md)更新；涵盖 1Panel 镜像导入、Docker Compose 源码构建和 systemd，沿用原数据库及主密钥。
 
 ## 启动
 
@@ -57,19 +59,29 @@ go run ./cmd/server
 
 ## sub2api 接入
 
-需搭配本次添加的 `custom_audit` 适配，旧版本不能仅换 URL：它不读取自定义策略判定。
+使用原版 sub2api 的“风控中心 → 内容审计设置 → 基础”，不需要“自定义审核服务”选项。兼容性以 `origin/main` 提交 `4726bdd08b6201d426a80529b79be123a4008d20` 的解析及分类判断代码验证。
 
 | 配置 | 值 |
 | --- | --- |
-| 审核服务类型 | 自定义审核服务 |
+| 运行模式 | 前置拦截（观察模式不阻止当前请求） |
 | Base URL | 审核服务根地址，不加 `/v1` |
 | 模型名 | `abuse-audit-v1`，或后台策略别名 |
 | API Key | 本系统为调用方生成的访问密钥，不是 DeepSeek 官方密钥 |
 | HTTP 超时 | 初始 15000 ms；需覆盖总调用时限及约 5 秒收尾时间 |
 | 重试次数 | 初始 0 |
-| 失败策略 | 根据业务选择放行或前置拦截返回 503 |
+| 分类阈值 | 保持默认值即可；所有分类阈值须大于 0，`illicit` 默认 0.95 |
 
-阈值由本系统后台管理。响应保留 `audit.schema_version=1`、正整数 `audit.policy_version` 及原评分、阈值、原因字段，以适配现有 sub2api 严格校验；`policy_version` 对应内部自动维护的保存标识，不提供历史配置管理。自定义服务不使用旧内容审核的前置 Hash 黑名单，避免策略更新后沿用旧判定。邮件、自动封禁、采样和分组范围仍由 sub2api 控制。
+本系统的提示词和阈值决定策略是否命中。原版 sub2api 忽略 `flagged` 和 `audit`，只比较内置分类的 `category_scores`；它能显示 `custom_policy` 的分数，却不会按该分类拦截。
+
+因此本服务使用内置 `illicit` 字段承载自定义策略的最终判定：命中返回分数 `1`，未命中返回 `0`。它是兼容用的判定信号，不表示模型把内容实际归类为违法行为，也不是模型置信度。仅将原始 0.8 分改名为 `illicit` 仍会低于 sub2api 默认 0.95 阈值，故不直接传原分。真实评分、阈值和原因保留在 `audit` 元数据和本服务审核记录中；sub2api 日志中的命中会显示 `illicit / 100%`。
+
+sub2api 各分类阈值须在 `(0, 1]` 内：原版对未返回分类也按 0 分处理，阈值设为 0 会导致所有请求命中，无法用合法的 `[0,1]` 分数避免。默认阈值无需调整。`audit.schema_version=1`、正整数 `policy_version` 作为本服务扩展元数据保留，原版 sub2api 不使用它们。
+
+“审核记录”覆盖所有到达本服务 `POST /v1/moderations` 的请求，包括密钥无效或撤销、限流、JSON/体积校验失败、图片等输入被拒绝、策略不可用及模型调用失败。每次请求生成一个 `X-Audit-Request-ID`，列表和详情显示 HTTP 状态、处理阶段、错误原因；解析成功的请求还显示策略别名、文本字数和图片数量。失败记录没有有效评分，模型调用次数为 0 表示尚未发起模型调用。
+
+入口失败记录默认保留 30 天；确认有权访问的策略后沿用其保留天数和“加密保存输入原文”设置，只保存可提取的文本（最多 64000 字），不保存访问密钥、图片数据或图片地址。客户端断开后仍会尝试保存记录；数据库不可用时会输出带请求 ID 的服务错误日志。此功能对更新后的新请求生效，无法补回过去未记录的请求，也无法记录被反向代理挡住、未到达本服务的请求。
+
+采样、分组范围、关键词、邮件、自动封禁和前置 Hash 黑名单均沿用原版 sub2api 行为。若要求所有请求都走模型审核，将采样率设为 100%、覆盖目标分组/模型并选择 API 审核；如需修改策略后立即重新审核相同内容，使用现有设置关闭前置 Hash 检查或按需清理旧命中缓存。审核 API 失败仍返回非 2xx，由原版 sub2api 按自身失败行为处理，不能仅靠本服务响应保证故障时拦截。
 
 ```http
 POST /v1/moderations
@@ -79,7 +91,29 @@ Content-Type: application/json
 {"model":"abuse-audit-v1","input":"待审核文本"}
 ```
 
-响应 `results[0]` 包含 flagged、`category_scores.custom_policy` 与 audit 元数据。比较使用未经显示舍入的数值：`flagged = confidence >= threshold`。后台初始阈值 0.80 是可调整起点，不是经过校准的准确率保证。
+响应核心字段示例（省略用量、费用和调度元数据）：
+
+```json
+{
+  "id": "audit_example",
+  "model": "abuse-audit-v1",
+  "results": [{
+    "flagged": true,
+    "categories": {"illicit": true},
+    "category_scores": {"illicit": 1},
+    "audit": {
+      "schema_version": 1,
+      "policy_id": "abuse-default",
+      "policy_version": 2,
+      "confidence": 0.95,
+      "threshold": 0.8,
+      "reason": "命中自定义审核策略"
+    }
+  }]
+}
+```
+
+比较使用未经显示舍入的数值：`flagged = confidence >= threshold`。未命中时 `flagged` 和 `categories.illicit` 为 `false`，`category_scores.illicit` 为 `0`。后台初始阈值 0.80 是可调整起点，不是经过校准的准确率保证。正式调用、试跑和缓存命中使用同一响应格式。
 
 ## 运行与备份
 
