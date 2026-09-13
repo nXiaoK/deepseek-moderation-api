@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/lib/pq"
 )
 
 type ChannelHealth struct {
@@ -260,8 +262,11 @@ func (s *Store) requestCost(ctx context.Context, id string) (*CostView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return aggregateCost(total, pending, estimated, known, held), nil
+}
+func aggregateCost(total, pending, estimated int, known, held int64) *CostView {
 	if total == 0 {
-		return nil, nil
+		return nil
 	}
 	amount := picoString(known)
 	v := &CostView{Status: "calculated", AmountCNY: &amount, ReservedCNY: picoString(held), Period: "multiple_attempts", Note: "所有调用尝试的费用合计"}
@@ -273,7 +278,28 @@ func (s *Store) requestCost(ctx context.Context, id string) (*CostView, error) {
 		v.AmountCNY = nil
 		v.Note = "存在待核对调用；已知费用小计 ¥" + amount
 	}
-	return v, nil
+	return v
+}
+func (s *Store) requestCosts(ctx context.Context, ids []string) (map[string]*CostView, error) {
+	items := make(map[string]*CostView, len(ids))
+	if len(ids) == 0 {
+		return items, nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id,COUNT(*),COUNT(*) FILTER(WHERE amount_pico IS NULL),COUNT(*) FILTER(WHERE status='estimated'),COALESCE(SUM(amount_pico),0),COALESCE(SUM(reserved_pico) FILTER(WHERE amount_pico IS NULL),0) FROM audit_costs WHERE request_id=ANY($1) GROUP BY request_id`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var total, pending, estimated int
+		var known, held int64
+		if err := rows.Scan(&id, &total, &pending, &estimated, &known, &held); err != nil {
+			return nil, err
+		}
+		items[id] = aggregateCost(total, pending, estimated, known, held)
+	}
+	return items, rows.Err()
 }
 func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, images ...AuditImage) (Response, error) {
 	id := randomToken("audit_")

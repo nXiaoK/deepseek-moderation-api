@@ -407,6 +407,18 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 	if f.ClientID != "" {
 		add("client_id=$%d", f.ClientID)
 	}
+	if f.RequestID != "" {
+		add("id=$%d", f.RequestID)
+	}
+	if f.Model != "" {
+		add("metadata->>'model'=$%d", f.Model)
+	}
+	if f.ChannelID != "" {
+		add("(metadata->>'channel_id'=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'channel_id'=$%[1]d))", f.ChannelID)
+	}
+	if f.ErrorCode != "" {
+		add("error_code=$%d", f.ErrorCode)
+	}
 	switch f.Result {
 	case "flagged":
 		where = append(where, "flagged=TRUE")
@@ -427,7 +439,7 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		return nil, 0, err
 	}
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
-	rows, err := s.DB.QueryContext(ctx, "SELECT metadata,created_at FROM audit_requests WHERE "+clause+fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	rows, err := s.DB.QueryContext(ctx, `SELECT (metadata-'model_output') || jsonb_build_object('attempts',COALESCE((SELECT jsonb_agg(item-'model_output') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item),'[]'::jsonb)),created_at FROM audit_requests WHERE `+clause+fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -454,11 +466,16 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		return nil, 0, err
 	}
 	rows.Close()
+	ids := make([]string, len(logs))
 	for i := range logs {
-		logs[i].Cost, err = s.requestCost(ctx, logs[i].ID)
-		if err != nil {
-			return nil, 0, err
-		}
+		ids[i] = logs[i].ID
+	}
+	costs, err := s.requestCosts(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range logs {
+		logs[i].Cost = costs[logs[i].ID]
 	}
 	return logs, count, nil
 }

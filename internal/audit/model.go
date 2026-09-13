@@ -251,6 +251,7 @@ type AuditLog struct {
 type LogFilter struct {
 	Page, PageSize                             int
 	Kind, PolicyID, ClientID, Result, From, To string
+	RequestID, Model, ChannelID, ErrorCode     string
 }
 type APIError struct {
 	Status  int

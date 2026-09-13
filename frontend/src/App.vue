@@ -117,6 +117,10 @@ const logItems = ref<AuditLog[]>([]),
   logPolicy = ref(""),
   logClient = ref(""),
   logFrom = ref(""),
+  logRequestID = ref(""),
+  logModel = ref(""),
+  logChannel = ref(""),
+  logErrorCode = ref(""),
   logTo = ref(""),
   detail = ref<AuditLog | null>(null);
 const currentPassword = ref(""),
@@ -434,6 +438,10 @@ async function loadLogs() {
   const q = new URLSearchParams({
     page: String(logPage.value),
     page_size: "20",
+    request_id: logRequestID.value.trim(),
+    model: logModel.value,
+    channel_id: logChannel.value,
+    error_code: logErrorCode.value,
     kind: logKind.value,
     result: logResult.value,
     policy_id: logPolicy.value,
@@ -1025,6 +1033,32 @@ window.addEventListener("beforeunload", (e) => {
         <template v-if="page === 'logs'"
           ><section class="panel">
             <form class="log-filters" @submit.prevent="filterLogs">
+              <label
+                >请求 ID<input
+                  v-model="logRequestID"
+                  placeholder="audit_…"
+                  maxlength="200"
+              /></label>
+              <label
+                >最终模型<input
+                  v-model="logModel"
+                  placeholder="全部模型"
+                  maxlength="200"
+              /></label>
+              <label
+                >调用通道<select v-model="logChannel">
+                  <option value="">全部通道</option>
+                  <option v-for="c in channels" :key="c.id" :value="c.id">
+                    {{ c.name }}
+                  </option>
+                </select></label
+              >
+              <label
+                >错误码<input
+                  v-model="logErrorCode"
+                  placeholder="全部错误"
+                  maxlength="200"
+              /></label>
               <label
                 >来源<select v-model="logKind">
                   <option value="">全部</option>

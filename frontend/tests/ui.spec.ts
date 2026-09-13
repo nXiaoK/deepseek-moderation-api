@@ -471,6 +471,26 @@ test("referenced connection credential deletion reports the conflict and keeps t
   await expect(remove).toBeEnabled();
 });
 
+test("audit log search sends request and channel filters", async ({ page }) => {
+  await page.goto("/");
+  await navigate(page, "审核记录");
+  await page.getByLabel("请求 ID", { exact: true }).fill("audit-1");
+  await page.getByLabel("最终模型", { exact: true }).fill("deepseek-v3.2");
+  await page
+    .getByRole("combobox", { name: "调用通道", exact: true })
+    .selectOption("channel-1");
+  const request = page.waitForRequest(
+    (req) =>
+      req.url().includes("/admin/audit-logs?") &&
+      new URL(req.url()).searchParams.get("request_id") === "audit-1",
+  );
+  await page.getByRole("button", { name: "筛选", exact: true }).click();
+  const query = new URL((await request).url()).searchParams;
+  expect(query.get("model")).toBe("deepseek-v3.2");
+  expect(query.get("channel_id")).toBe("channel-1");
+  expect(query.get("page")).toBe("1");
+});
+
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {
   await page.route("**/admin/session", (route) =>
     route.fulfill({ status: 401, json: { error: { message: "请先登录" } } }),

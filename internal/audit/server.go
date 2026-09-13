@@ -513,6 +513,9 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) error {
 	if page < 1 {
 		page = 1
 	}
+	if page > 1000000 {
+		return problem(400, "invalid_page", "页码过大")
+	}
 	size, _ := strconv.Atoi(q.Get("page_size"))
 	if size < 1 || size > 100 {
 		size = 20
@@ -524,7 +527,12 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 	}
-	logs, total, err := s.Store.Logs(r.Context(), LogFilter{page, size, q.Get("kind"), q.Get("policy_id"), q.Get("client_id"), q.Get("result"), q.Get("from"), q.Get("to")})
+	for _, key := range []string{"request_id", "model", "channel_id", "error_code"} {
+		if len(q.Get(key)) > 200 {
+			return problem(400, "invalid_filter", "筛选值过长")
+		}
+	}
+	logs, total, err := s.Store.Logs(r.Context(), LogFilter{Page: page, PageSize: size, Kind: q.Get("kind"), PolicyID: q.Get("policy_id"), ClientID: q.Get("client_id"), Result: q.Get("result"), From: q.Get("from"), To: q.Get("to"), RequestID: strings.TrimSpace(q.Get("request_id")), Model: q.Get("model"), ChannelID: q.Get("channel_id"), ErrorCode: q.Get("error_code")})
 	if err != nil {
 		return err
 	}
