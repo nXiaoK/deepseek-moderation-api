@@ -16,7 +16,6 @@ import (
 type CostReservation struct {
 	ImageInput                   bool
 	GatewayManaged               bool
-	Provider                     string
 	ID, ClientID, Kind, PolicyID string
 	Model                        string
 	Price                        *PriceCard
@@ -97,9 +96,6 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		requestID, channelID = route[0], route[1]
 	}
 	card, err := s.Price(ctx, cfg.Model, at)
-	if !cfg.officialPricing() {
-		card = nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +106,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 			return nil, err
 		}
 	}
-	entry := &CostReservation{ImageInput: cfg.ImageCount > 0, GatewayManaged: !cfg.officialPricing(), Provider: cfg.ProviderID(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
+	entry := &CostReservation{ImageInput: cfg.ImageCount > 0, GatewayManaged: card == nil && !cfg.officialPricing(), ID: id, ClientID: client, Kind: kind, PolicyID: p.ID, Model: cfg.Model, Price: card, StartedAt: at, Reserved: reserved, CacheHit: cached}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -163,7 +159,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		status = "local_cache"
 		amount = int64(0)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider,channel_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, client, kind, p.ID, requestID, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, at), cfg.ProviderID(), channelID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider,channel_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, client, kind, p.ID, requestID, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, card, at), cfg.ProviderID(), channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -182,10 +178,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 	} else if u.Attempted {
 		if entry.Price == nil {
 			status = "pending"
-			note = "模型单价未知或使用第三方接口，请核对供应商账单；不套用 DeepSeek 官方价格"
-			if entry.Provider == ProviderGrok {
-				note = "Grok 模型由 sub2api API 提供；未取得逐请求实际货币成本，不能按 DeepSeek 价格计算"
-			}
+			note = "未配置该通道模型名对应的单价，请核对供应商账单"
 		} else {
 			var err error
 			amount, status, note, err = entry.Price.calculate(u, entry.StartedAt, end)

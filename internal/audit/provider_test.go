@@ -389,11 +389,11 @@ func TestDeepSeekThirdPartyCredentialBindingAndCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Price != nil {
-		t.Fatal("third-party got official price")
+	if entry.Price == nil || entry.Reserved == 0 {
+		t.Fatal("third-party did not use matching model price")
 	}
 	cost, err := store.SettleCost(ctx, entry, Usage{Attempted: true, Reported: true, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, time.Now())
-	if err != nil || cost.AmountCNY != nil || cost.Period != "gateway_managed" {
+	if err != nil || cost.AmountCNY == nil || *cost.AmountCNY == "0" || cost.Status != "estimated" || cost.Period != pricePeriod(entry.StartedAt) {
 		t.Fatal(cost, err)
 	}
 }

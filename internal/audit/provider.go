@@ -67,7 +67,7 @@ func (c PolicyConfig) inferenceURL() string {
 	return root + "/v1/chat/completions"
 }
 
-// Third-party gateways can charge different rates for the same model name.
+// Identify the official endpoint for provider-specific request defaults.
 func (c PolicyConfig) officialPricing() bool {
 	return c.ProviderID() == ProviderDeepSeek && providerRoot(c.BaseURL) == "https://api.deepseek.com"
 }

@@ -412,7 +412,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			if e != nil {
 				return Assessment{}, e
 			}
-			if !cfg.officialPricing() || card == nil || cfg.ImageCount > 0 {
+			if card == nil || cfg.ImageCount > 0 {
 				excludedPrice = true
 				continue
 			}

@@ -150,6 +150,127 @@ func TestCostSnapshotSettlementIdempotencyAndPeriodBudgets(t *testing.T) {
 		t.Fatal("cost evidence deleted")
 	}
 }
+
+func TestConfiguredModelPriceAcrossProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, base string
+	}{
+		{"official", ProviderDeepSeek, "https://api.deepseek.com"},
+		{"third_party", ProviderDeepSeek, "https://gateway.test"},
+		{"sub2api", ProviderGrok, "https://sub2api.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testStore(t)
+			ctx := context.Background()
+			t.Setenv("AUDIT_SUB2API_ORIGINS", "https://sub2api.test")
+			p, key := configureBillingPolicy(t, store, 0)
+			cred, err := store.SaveProviderCredential(ctx, "admin", "", tc.name, "test-model-key", true, tc.provider, tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel := createTestChannel(t, store, cred, "display-name", "gpt-5.6-luna")
+			p.Config.Channels = []ChannelBinding{{channel.ID, 1, 100, true}}
+			if err = store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
+				t.Fatal(err)
+			}
+			p, err = store.Policy(ctx, p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			app, err := NewServer(store, "http://localhost:8090", t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			app.Engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+				var payload struct{ Model string }
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Model != channel.Model {
+					t.Fatal("wrong configured model", payload, err)
+				}
+				calls.Add(1)
+				if tc.provider == ProviderGrok {
+					return grokStreamResponse(grokSSE(`{"confidence":0.1,"reason":"ok"}`, `{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":8}}`)), nil
+				}
+				body := `{"model":"upstream-model","choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.1,\"reason\":\"ok\"}"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":2}}`
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(body))}, nil
+			})}
+			// A trial without a matching price stays pending after a price is published.
+			if result, err := runTestAudit(t, app, p, "admin", "test", "before price"); err != nil || result.Cost.Status != "pending" || result.Cost.AmountCNY != nil {
+				t.Fatal("unpriced request must remain unknown", result, err)
+			}
+			if _, err = store.DB.Exec("INSERT INTO client_budgets(client_id,monthly_limit) VALUES($1,1000000000000)", key.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = runTestAudit(t, app, p, key.ID, "production", "before price"); errorCode(err) != "pricing_unavailable" || calls.Load() != 1 {
+				t.Fatal("unpriced channel bypassed budget", err)
+			}
+			save := func(expectedID int64, output string) {
+				t.Helper()
+				raw, _ := json.Marshal(map[string]any{
+					"model": channel.Model, "source": "test custom tariff", "expected_price_id": expectedID,
+					"rates_cny": map[string]string{"off_hit": "1", "off_miss": "3", "off_output": output, "peak_hit": "1", "peak_miss": "3", "peak_output": output},
+				})
+				req := httptest.NewRequest("POST", "/admin/billing/prices", bytes.NewReader(raw))
+				req = req.WithContext(context.WithValue(ctx, sessionKey{}, session{Username: "admin"}))
+				if err := app.savePrice(httptest.NewRecorder(), req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			save(0, "4")
+			price, err := store.Price(ctx, channel.Model, time.Now())
+			if err != nil || price == nil {
+				t.Fatal("saved price missing", err)
+			}
+			result, err := runTestAudit(t, app, p, key.ID, "production", "priced request")
+			// 8 cached * 1 + 2 uncached * 3 + 5 output * 4, per million tokens.
+			if err != nil || result.Cost.AmountCNY == nil || *result.Cost.AmountCNY != "0.000034" || result.Cost.Status != "calculated" || result.ActualModel == channel.Model {
+				t.Fatal("configured name did not determine price", result, err)
+			}
+			save(price.ID, "8")
+			result, err = runTestAudit(t, app, p, key.ID, "production", "updated price")
+			if err != nil || result.Cost.AmountCNY == nil || *result.Cost.AmountCNY != "0.000054" {
+				t.Fatal("new request did not use updated price", result, err)
+			}
+			w := httptest.NewRecorder()
+			if err = app.costs(w, httptest.NewRequest("GET", "/admin/billing/costs", nil)); err != nil {
+				t.Fatal(err)
+			}
+			var ledger struct {
+				Items   []CostRow `json:"items"`
+				Summary struct {
+					Calculated string `json:"calculated_cny"`
+					Pending    int    `json:"pending_count"`
+				} `json:"summary"`
+			}
+			if err = json.Unmarshal(w.Body.Bytes(), &ledger); err != nil || ledger.Summary.Calculated != "0.000088" || ledger.Summary.Pending != 1 {
+				t.Fatal("incorrect cost summary", ledger, err)
+			}
+			foundSnapshot := false
+			for _, row := range ledger.Items {
+				if row.Cost.PriceID != nil && *row.Cost.PriceID == price.ID {
+					foundSnapshot = true
+					if row.Price == nil || row.Price.Rates.OffOutput != 4_000_000 || row.Cost.AmountCNY == nil || *row.Cost.AmountCNY != "0.000034" || row.Cost.Period != pricePeriod(row.StartedAt) {
+						t.Fatal("original price snapshot or tariff changed", row)
+					}
+				}
+			}
+			if !foundSnapshot {
+				t.Fatal("original price snapshot missing")
+			}
+			budgets, err := store.Budgets(ctx, time.Now())
+			if err != nil || len(budgets) != 1 || budgets[0].MonthlyUsed != "0.000088" || budgets[0].MonthlyReserved != "0" {
+				t.Fatal("priced calls did not settle budget", budgets, err)
+			}
+			if _, err = store.DB.Exec("UPDATE client_budgets SET monthly_limit=88000000 WHERE client_id=$1", key.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = runTestAudit(t, app, p, key.ID, "production", "over budget"); errorCode(err) != "budget_exceeded" || calls.Load() != 3 {
+				t.Fatal("exhausted budget allowed an upstream call", err, calls.Load())
+			}
+		})
+	}
+}
+
 func TestExactResultCacheSavesTokensAndHonorsScopeAndBudget(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

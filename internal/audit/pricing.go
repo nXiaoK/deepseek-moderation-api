@@ -208,8 +208,8 @@ func (u *Usage) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-func providerTariff(cfg PolicyConfig, t time.Time) string {
-	if !cfg.officialPricing() {
+func providerTariff(cfg PolicyConfig, card *PriceCard, t time.Time) string {
+	if card == nil && !cfg.officialPricing() {
 		return "gateway_managed"
 	}
 	return pricePeriod(t)
