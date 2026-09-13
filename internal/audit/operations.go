@@ -14,17 +14,18 @@ type OperationalAlert struct {
 	Page     string `json:"page"`
 }
 type OperationsReport struct {
-	UptimeSeconds      int64         `json:"uptime_seconds"`
-	Runtime            RuntimeConfig `json:"runtime"`
-	ActiveRequests     int           `json:"active_requests"`
-	RequestBodyBytes   int64         `json:"request_body_bytes"`
-	ModelInFlight      int           `json:"model_in_flight"`
-	TrialInFlight      int           `json:"trial_in_flight"`
-	MigrationVersion   int           `json:"migration_version"`
-	PendingCosts       int64         `json:"pending_costs"`
-	EstimatedCosts     int64         `json:"estimated_costs"`
-	RunningEvaluations int64         `json:"running_evaluations"`
-	Database           struct {
+	PersistenceFailures int64         `json:"persistence_failures"`
+	UptimeSeconds       int64         `json:"uptime_seconds"`
+	Runtime             RuntimeConfig `json:"runtime"`
+	ActiveRequests      int           `json:"active_requests"`
+	RequestBodyBytes    int64         `json:"request_body_bytes"`
+	ModelInFlight       int           `json:"model_in_flight"`
+	TrialInFlight       int           `json:"trial_in_flight"`
+	MigrationVersion    int           `json:"migration_version"`
+	PendingCosts        int64         `json:"pending_costs"`
+	EstimatedCosts      int64         `json:"estimated_costs"`
+	RunningEvaluations  int64         `json:"running_evaluations"`
+	Database            struct {
 		Open      int   `json:"open"`
 		InUse     int   `json:"in_use"`
 		Idle      int   `json:"idle"`
@@ -58,6 +59,10 @@ func budgetNearLimit(used, reserved string, limit *string) bool {
 }
 func (s *Server) operations(w http.ResponseWriter, r *http.Request) error {
 	out := OperationsReport{UptimeSeconds: int64(time.Since(s.startedAt).Seconds()), Runtime: s.Runtime, ModelInFlight: len(s.Engine.slots), TrialInFlight: len(s.trialSlots), Alerts: []OperationalAlert{}}
+	out.PersistenceFailures = s.telemetry.persistenceFailures.Load()
+	if last := s.telemetry.lastPersistenceFailure.Load(); last > 0 && time.Now().Unix()-last <= 300 {
+		out.Alerts = append(out.Alerts, OperationalAlert{"persistence", "critical", "最近 5 分钟出现审核记录或费用保存失败，请检查服务日志", "logs"})
+	}
 	s.admission.mu.Lock()
 	out.ActiveRequests, out.RequestBodyBytes = s.admission.active, s.admission.bytes
 	s.admission.mu.Unlock()

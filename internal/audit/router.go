@@ -366,6 +366,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	defer finishCancel()
 	cost, costErr := s.Store.requestCost(finishCtx, id)
 	if costErr != nil {
+		s.notePersistenceFailure(id, "cost_summary")
 		err = problem(503, "cost_record_unavailable", "费用汇总暂时不可用")
 	}
 	response.Cost = cost
@@ -406,6 +407,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 		}
 	}
 	if recordErr := s.Store.Record(finishCtx, log, input, p.Config.RetentionDays); recordErr != nil {
+		s.notePersistenceFailure(id, "audit_record")
 		if a != nil {
 			a.log.Request.Stage = "recording"
 		}
@@ -634,6 +636,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		response.Usage.ReasoningTokens += usage.ReasoningTokens
 		response.Usage.Reported = response.Usage.Reported && usage.Reported
 		if err != nil {
+			s.notePersistenceFailure(response.ID, "cost_settlement")
 			return Assessment{}, problem(503, "cost_record_unavailable", "成本结算暂时不可用，预留费用待核对")
 		}
 		if e != nil {

@@ -95,6 +95,7 @@ func (s *Server) cachedRoute(ctx context.Context, p Policy, candidates []routeCa
 		cost, err := s.Store.SettleCost(settleCtx, entry, usage, time.Now(), nil)
 		cancel()
 		if err != nil {
+			s.notePersistenceFailure(response.ID, "cached_cost")
 			return Assessment{}, false, problem(503, "cost_record_unavailable", "缓存费用记录暂时不可用")
 		}
 		scope := auditInputScope(c.channel.TextOnly, images)

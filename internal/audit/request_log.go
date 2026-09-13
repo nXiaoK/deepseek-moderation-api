@@ -56,6 +56,7 @@ func (s *Server) auditModeration(next endpoint) endpoint {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Second)
 			defer cancel()
 			if recordErr := s.Store.Record(ctx, a.log, a.input, a.days); recordErr != nil {
+				s.notePersistenceFailure(a.log.ID, "request_record")
 				slog.Error("moderation request record failed", "request_id", a.log.ID, "stage", a.log.Request.Stage, "error_code", a.log.ErrorCode)
 				if err == nil {
 					err = problem(503, "record_unavailable", "审核记录暂时无法保存")

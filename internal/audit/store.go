@@ -458,14 +458,21 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 	if f.RequestID != "" {
 		add("id=$%d", f.RequestID)
 	}
-	if f.Model != "" {
-		add("(metadata->>'model'=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'model'=$%[1]d OR item->'usage'->>'actual_model'=$%[1]d))", f.Model)
+	roots, attempts := []string{}, []string{}
+	for _, filter := range []struct{ value, root, attempt string }{
+		{f.Model, "metadata->>'model'=$%d", "(item->>'model'=$%[1]d OR item->'usage'->>'actual_model'=$%[1]d)"},
+		{f.ChannelID, "metadata->>'channel_id'=$%d", "item->>'channel_id'=$%d"},
+		{f.ErrorCode, "error_code=$%d", "item->>'error_code'=$%d"},
+	} {
+		if filter.value == "" {
+			continue
+		}
+		args = append(args, filter.value)
+		roots = append(roots, fmt.Sprintf(filter.root, len(args)))
+		attempts = append(attempts, fmt.Sprintf(filter.attempt, len(args)))
 	}
-	if f.ChannelID != "" {
-		add("(metadata->>'channel_id'=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'channel_id'=$%[1]d))", f.ChannelID)
-	}
-	if f.ErrorCode != "" {
-		add("(error_code=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'error_code'=$%[1]d))", f.ErrorCode)
+	if len(roots) > 0 {
+		where = append(where, "(("+strings.Join(roots, " AND ")+") OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE "+strings.Join(attempts, " AND ")+"))")
 	}
 	switch f.Result {
 	case "flagged":
@@ -570,6 +577,9 @@ func (s *Store) Overview(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"requests": count, "flagged": hits, "errors": fail, "tokens": tokens, "avg_latency_ms": avg, "p95_latency_ms": p95}, err
 }
 func (s *Store) Cleanup(ctx context.Context) error {
+	if err := s.cleanupEvaluations(ctx); err != nil {
+		return err
+	}
 	if _, err := s.DB.ExecContext(ctx, "DELETE FROM evaluation_runs WHERE created_at<NOW()-INTERVAL '90 days' AND status NOT IN ('queued','running')"); err != nil {
 		return err
 	}

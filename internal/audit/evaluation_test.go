@@ -212,3 +212,21 @@ func TestEvaluationRecoveryKeepsInterruptedRequestLinks(t *testing.T) {
 		}
 	}
 }
+func TestEvaluationStaleRunsAreFinalized(t *testing.T) {
+	app, p, _ := evaluationTestServer(t)
+	ctx := context.Background()
+	raw, _ := json.Marshal(evaluationPlan{Policy: p})
+	if _, err := app.Store.DB.Exec("INSERT INTO evaluation_runs(id,name,username,policy_id,policy_name,status,total,max_cost_pico,plan_cipher,created_at) VALUES('stale','stale','admin',$1,'policy','running',1,0,$2,NOW()-INTERVAL '40 minutes')", p.ID, app.Store.Vault.Seal(string(raw), "evaluation-run:stale")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Store.DB.Exec("INSERT INTO evaluation_results(run_id,sequence,sample_id,sample_name,target,iteration,expected,status) VALUES('stale',0,'s','sample','',1,'allow','running')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.Cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := app.Store.evaluationRun(ctx, "stale")
+	if err != nil || run.Status != "interrupted" || run.Completed != 1 {
+		t.Fatal(run, err)
+	}
+}

@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ignoreAPIError, type RuntimeLimits } from "./api";
 import AppIcon from "./AppIcon.vue";
 interface Report {
+  persistence_failures?: number;
   uptime_seconds: number;
   runtime: RuntimeLimits;
   active_requests: number;
@@ -137,6 +138,7 @@ onBeforeUnmount(() => {
           >待核对 {{ report.pending_costs }} 笔 · 估算
           {{ report.estimated_costs }} 笔</span
         >
+        <span>持久化失败 {{ report.persistence_failures || 0 }} 次</span>
         <span
           >运行中评测 {{ report.running_evaluations }} 项 · 每次最多
           {{ report.runtime.max_images }} 张图片</span

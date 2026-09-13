@@ -46,6 +46,19 @@ func TestOperationsReportAlertsAndBoundaries(t *testing.T) {
 	if !found {
 		t.Fatal("unavailable policy not alerted", report.Alerts)
 	}
+	app.notePersistenceFailure("test-request", "test")
+	if err := json.Unmarshal(call("GET", "/admin/operations", nil, 200), &report); err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, a := range report.Alerts {
+		if a.ID == "persistence" {
+			found = true
+		}
+	}
+	if !found || report.PersistenceFailures != 1 {
+		t.Fatal("persistence failure was not surfaced")
+	}
 	w := httptest.NewRecorder()
 	app.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/admin/operations", nil))
 	if w.Code != 401 {

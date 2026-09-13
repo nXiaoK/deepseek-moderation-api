@@ -6,6 +6,12 @@ export interface RuntimeLimits {
   trial_concurrency: number;
   max_images: number;
 }
+export interface EvaluationSampleSeed {
+  name: string;
+  input: string;
+  expected: "allow" | "flagged" | "manual";
+  note: string;
+}
 export interface AnalysisLogFilter {
   from: string;
   to: string;

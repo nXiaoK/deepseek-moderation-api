@@ -967,6 +967,11 @@ td small {
   border: 0;
   font-size: 22px;
 }
+.modal .panel-heading > .text-button {
+  width: auto;
+  font-size: 12px;
+  padding: 3px 6px;
+}
 .modal .form-grid {
   gap: 18px;
 }

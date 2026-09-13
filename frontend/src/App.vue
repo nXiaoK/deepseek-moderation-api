@@ -31,6 +31,7 @@ import {
   setCSRF,
   setUnauthorizedHandler,
   ignoreAPIError,
+  downloadFile,
   type AuditLog,
   type ClientKey,
   type Config,
@@ -40,6 +41,7 @@ import {
   type ModelChannel,
   type AnalysisLogFilter,
   type RuntimeLimits,
+  type EvaluationSampleSeed,
 } from "./api";
 
 const AnalyticsPanel = defineAsyncComponent(
@@ -95,6 +97,7 @@ const policies = ref<Policy[]>([]),
   policyName = ref(""),
   baseline = ref("");
 const archivedPolicies = ref<Policy[]>([]);
+const evaluationSeed = ref<EvaluationSampleSeed | null>(null);
 const runtime = ref<RuntimeLimits>({
   model_concurrency: 16,
   request_concurrency: 32,
@@ -356,6 +359,7 @@ async function logout() {
   });
 }
 function clearSession() {
+  evaluationSeed.value = null;
   user.value = "";
   setCSRF("");
   selected.value = null;
@@ -604,7 +608,7 @@ async function copyToken() {
     error.value = "复制失败，请选中密钥手动复制。";
   }
 }
-async function loadLogs() {
+function logQuery() {
   const q = new URLSearchParams({
     page: String(logPage.value),
     page_size: "20",
@@ -619,6 +623,15 @@ async function loadLogs() {
   });
   if (logFrom.value) q.set("from", new Date(logFrom.value).toISOString());
   if (logTo.value) q.set("to", new Date(logTo.value).toISOString());
+  return q;
+}
+async function exportAuditLogs() {
+  await run(() =>
+    downloadFile("/admin/audit-logs/export?" + logQuery(), "audit-records.csv"),
+  );
+}
+async function loadLogs() {
+  const q = logQuery();
   const data = await api<{ items: AuditLog[]; total: number }>(
     `/admin/audit-logs?${q}`,
   );
@@ -633,6 +646,21 @@ async function openLog(id: string) {
   await run(async () => {
     detail.value = await api(`/admin/audit-logs/${id}`);
   });
+}
+async function sampleFromAudit() {
+  const log = detail.value;
+  if (!log?.input_stored || !log.input?.trim()) return;
+  evaluationSeed.value = {
+    name:
+      Array.from(policyLabel(log.policy_id)).slice(0, 40).join("") +
+      " · " +
+      log.id.slice(-8),
+    input: log.input,
+    expected: "manual",
+    note: "来源审核请求 " + log.id,
+  };
+  detail.value = null;
+  await navigate("evaluations");
 }
 async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
   logFrom.value = localDateInput(filter.from);
@@ -927,6 +955,8 @@ window.addEventListener("beforeunload", (e) => {
           v-if="page === 'evaluations'"
           :policies="policies"
           :channels="channels"
+          :seed="evaluationSeed"
+          @seeded="evaluationSeed = null"
           @log="openLog"
           @unauthorized="
             user = '';
@@ -1359,6 +1389,16 @@ window.addEventListener("beforeunload", (e) => {
               ><button :disabled="busy">
                 <AppIcon name="filters" :size="16" />筛选
               </button>
+              <button
+                type="button"
+                class="icon-button"
+                title="导出审核摘要 CSV"
+                aria-label="导出审核摘要 CSV"
+                :disabled="busy"
+                @click="exportAuditLogs"
+              >
+                <AppIcon name="download" :size="16" />
+              </button>
             </form>
             <div class="table-scroll">
               <table>
@@ -1648,6 +1688,14 @@ window.addEventListener("beforeunload", (e) => {
     >
       <div class="panel-heading">
         <h2>审核详情</h2>
+        <button
+          class="text-button"
+          :disabled="busy || !detail.input_stored || !detail.input?.trim()"
+          title="仅可使用已保存的文本"
+          @click="sampleFromAudit"
+        >
+          <AppIcon name="flask" :size="16" />加入评测样本
+        </button>
         <button @click="detail = null" aria-label="关闭">
           <AppIcon name="close" />
         </button>

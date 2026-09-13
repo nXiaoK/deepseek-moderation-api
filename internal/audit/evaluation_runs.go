@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"slices"
@@ -269,6 +270,11 @@ func (s *Server) finishEvaluation(id, status, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	tx, err := s.Store.DB.BeginTx(ctx, nil)
+	defer func() {
+		if err != nil {
+			slog.Error("evaluation finalization failed", "evaluation_id", id, "status", status)
+		}
+	}()
 	if err != nil {
 		return
 	}
@@ -282,7 +288,21 @@ func (s *Server) finishEvaluation(id, status, message string) {
 	if _, err = tx.ExecContext(ctx, "UPDATE evaluation_runs SET completed=(SELECT COUNT(*) FROM evaluation_results WHERE run_id=$1 AND status IN ('completed','error','interrupted')) WHERE id=$1", id); err != nil {
 		return
 	}
-	_ = tx.Commit()
+	err = tx.Commit()
+}
+func (s *Store) cleanupEvaluations(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE evaluation_results SET status=CASE WHEN status='running' THEN 'interrupted' ELSE 'skipped' END WHERE status IN ('pending','running') AND run_id IN (SELECT id FROM evaluation_runs WHERE status IN ('queued','running') AND created_at<NOW()-INTERVAL '35 minutes')"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE evaluation_runs SET status='interrupted',message='评测已超过执行时限，未自动重发调用',finished_at=NOW(),completed=(SELECT COUNT(*) FROM evaluation_results WHERE run_id=evaluation_runs.id AND status IN ('completed','error','interrupted')) WHERE status IN ('queued','running') AND created_at<NOW()-INTERVAL '35 minutes'"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Server) executeEvaluation(ctx context.Context, id, username string, plan evaluationPlan) {
 	if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET status='running' WHERE id=$1 AND status='queued'", id); err != nil {

@@ -326,6 +326,7 @@ test("small costs retain decimals and isolated latency samples remain visible", 
       ),
     )
     .toBe(true);
+  await page.locator(".trend-chart canvas").scrollIntoViewIfNeeded();
   const chartBounds = await page.locator(".trend-chart canvas").boundingBox();
   await page.mouse.move(
     chartBounds!.x + 14,
@@ -1061,6 +1062,68 @@ test("invalid JSON is reported without treating it as application data", async (
   await navigate(page, "数据分析");
   await expect(page.getByRole("alert")).toContainText("服务返回了无效响应");
   await expect(page.locator(".app-shell")).toBeVisible();
+});
+
+test("audit summaries export active filters and stored text seeds manual evaluation", async ({
+  page,
+}) => {
+  let exported = false;
+  await page.route("**/admin/audit-logs/export?*", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("request_id")).toBe(
+      "audit-1",
+    );
+    exported = true;
+    return route.fulfill({
+      contentType: "text/csv",
+      body: "request_id\naudit-1\n",
+    });
+  });
+  await page.route("**/admin/audit-logs/audit-1", (route) =>
+    route.fulfill({
+      json: {
+        id: "audit-1",
+        policy_id: "policy-1",
+        kind: "production",
+        client_id: "client-1",
+        model: "deepseek-v3.2",
+        attempt_count: 1,
+        flagged: false,
+        confidence: 0.1,
+        threshold: 0.8,
+        reason: "ok",
+        error_code: "",
+        latency_ms: 100,
+        usage: {
+          reported: true,
+          total_tokens: 15,
+          prompt_tokens: 10,
+          completion_tokens: 5,
+        },
+        attempts: [],
+        input_stored: true,
+        input: "保存的审核文本",
+        created_at: "2026-09-14T00:00:00Z",
+      },
+    }),
+  );
+  await page.goto("/");
+  await navigate(page, "审核记录");
+  await page.getByLabel("请求 ID", { exact: true }).fill("audit-1");
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "导出审核摘要 CSV", exact: true })
+    .click();
+  expect((await download).suggestedFilename()).toBe("audit-records.csv");
+  expect(exported).toBe(true);
+  await page.getByRole("button", { name: "详情", exact: true }).click();
+  await page.getByRole("button", { name: "加入评测样本", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "标注样本", exact: true });
+  await expect(modal.getByLabel("样本内容", { exact: true })).toHaveValue(
+    "保存的审核文本",
+  );
+  await expect(
+    modal.getByRole("combobox", { name: "预期判定", exact: true }),
+  ).toHaveValue("manual");
 });
 
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {

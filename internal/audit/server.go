@@ -40,6 +40,7 @@ type Server struct {
 	evaluationWorkers sync.WaitGroup
 	closing           bool
 	startedAt         time.Time
+	telemetry         auditTelemetry
 }
 type session struct {
 	Username  string
@@ -126,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /admin/api-keys/{id}/revoke", s.revokeKey)
 	admin("DELETE /admin/api-keys/{id}", s.deleteKey)
 	admin("GET /admin/audit-logs", s.logs)
+	admin("GET /admin/audit-logs/export", s.exportLogs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
 	admin("GET /admin/analytics", s.analytics)
 	admin("GET /admin/operations", s.operations)
@@ -581,35 +583,15 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, 200, map[string]any{"object": "list", "data": items})
 }
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) error {
-	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	if page > 1000000 {
-		return problem(400, "invalid_page", "页码过大")
-	}
-	size, _ := strconv.Atoi(q.Get("page_size"))
-	if size < 1 || size > 100 {
-		size = 20
-	}
-	for _, key := range []string{"from", "to"} {
-		if q.Get(key) != "" {
-			if _, err := time.Parse(time.RFC3339, q.Get(key)); err != nil {
-				return problem(400, "invalid_date", "时间格式必须为 RFC3339")
-			}
-		}
-	}
-	for _, key := range []string{"request_id", "model", "channel_id", "error_code"} {
-		if len(q.Get(key)) > 200 {
-			return problem(400, "invalid_filter", "筛选值过长")
-		}
-	}
-	logs, total, err := s.Store.Logs(r.Context(), LogFilter{Page: page, PageSize: size, Kind: q.Get("kind"), PolicyID: q.Get("policy_id"), ClientID: q.Get("client_id"), Result: q.Get("result"), From: q.Get("from"), To: q.Get("to"), RequestID: strings.TrimSpace(q.Get("request_id")), Model: q.Get("model"), ChannelID: q.Get("channel_id"), ErrorCode: q.Get("error_code")})
+	filter, err := parseLogFilter(r.URL.Query())
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, 200, map[string]any{"items": logs, "total": total, "page": page, "page_size": size})
+	logs, total, err := s.Store.Logs(r.Context(), filter)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, 200, map[string]any{"items": logs, "total": total, "page": filter.Page, "page_size": filter.PageSize})
 }
 func (s *Server) logDetail(w http.ResponseWriter, r *http.Request) error {
 	item, err := s.Store.LogDetail(r.Context(), r.PathValue("id"))

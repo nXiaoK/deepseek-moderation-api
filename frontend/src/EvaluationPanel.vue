@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   api,
   APIError,
@@ -9,6 +9,7 @@ import {
   type Policy,
   type ModelChannel,
   type CostView,
+  type EvaluationSampleSeed,
 } from "./api";
 import AppIcon from "./AppIcon.vue";
 
@@ -75,8 +76,12 @@ interface Detail {
   results: Result[];
   scores: Score[];
 }
-const props = defineProps<{ policies: Policy[]; channels: ModelChannel[] }>();
-const emit = defineEmits<{ unauthorized: []; log: [id: string] }>();
+const props = defineProps<{
+  policies: Policy[];
+  channels: ModelChannel[];
+  seed?: EvaluationSampleSeed | null;
+}>();
+const emit = defineEmits<{ unauthorized: []; log: [id: string]; seeded: [] }>();
 const tab = ref("samples"),
   busy = ref(false),
   error = ref(""),
@@ -99,6 +104,16 @@ const runForm = ref<{
 const importInput = ref<HTMLInputElement>(),
   resultFilter = ref("all");
 const abort = new AbortController();
+watch(
+  () => props.seed,
+  (value) => {
+    if (value) {
+      editor.value = { ...value, id: "", revision: 0 };
+      emit("seeded");
+    }
+  },
+  { immediate: true },
+);
 let timer: ReturnType<typeof setInterval> | undefined;
 let polling = false,
   disposed = false;
