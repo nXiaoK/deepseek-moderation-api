@@ -1,4 +1,14 @@
 export type Provider = "deepseek" | "grok_via_sub2api";
+export interface AnalysisLogFilter {
+  from: string;
+  to: string;
+  kind: string;
+  model: string;
+  policy_id: string;
+  client_id: string;
+  channel_id: string;
+  error_code?: string;
+}
 export interface ChannelBinding {
   channel_id: string;
   priority: number;

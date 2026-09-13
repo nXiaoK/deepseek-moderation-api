@@ -65,3 +65,5 @@ CREATE INDEX IF NOT EXISTS model_prices_connection ON model_prices(model,credent
 ALTER TABLE audit_requests ADD COLUMN IF NOT EXISTS output_cipher BYTEA;
 ALTER TABLE audit_requests ADD COLUMN IF NOT EXISTS output_expires_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS audit_output_expiry ON audit_requests(output_expires_at) WHERE output_cipher IS NOT NULL;
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS outcome_known BOOLEAN NOT NULL DEFAULT FALSE;

@@ -475,7 +475,7 @@ test("audit log search sends request and channel filters", async ({ page }) => {
   await page.goto("/");
   await navigate(page, "审核记录");
   await page.getByLabel("请求 ID", { exact: true }).fill("audit-1");
-  await page.getByLabel("最终模型", { exact: true }).fill("deepseek-v3.2");
+  await page.getByLabel("审核模型", { exact: true }).fill("deepseek-v3.2");
   await page
     .getByRole("combobox", { name: "调用通道", exact: true })
     .selectOption("channel-1");
@@ -575,16 +575,14 @@ test("image trials support uploads, URL blocks and removal", async ({
   });
   await page.goto("/");
   await page.getByRole("tab", { name: "审核试跑" }).click();
-  await page
-    .getByLabel("选择本地图片", { exact: true })
-    .setInputFiles({
-      name: "sample.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    });
+  await page.getByLabel("选择本地图片", { exact: true }).setInputFiles({
+    name: "sample.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
   await expect(page.getByAltText("审核图片 1")).toBeVisible();
   await page
     .getByLabel("图片 URL", { exact: true })
@@ -609,6 +607,39 @@ test("image trials support uploads, URL blocks and removal", async ({
   });
   await page.getByRole("button", { name: "移除图片 2", exact: true }).click();
   await expect(page.locator(".trial-image")).toHaveCount(1);
+});
+
+test("analytics dimensions carry into audit log drilldown", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await navigate(page, "数据分析");
+  await checkCanvas(page);
+  await page
+    .getByRole("combobox", { name: "策略", exact: true })
+    .selectOption("policy-1");
+  await checkCanvas(page);
+  await page
+    .getByRole("combobox", { name: "调用方", exact: true })
+    .selectOption("client-1");
+  await checkCanvas(page);
+  await page
+    .getByRole("combobox", { name: "模型通道", exact: true })
+    .selectOption("channel-1");
+  await checkCanvas(page);
+  const request = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs?"),
+  );
+  await page.getByRole("button", { name: "查看审核记录", exact: true }).click();
+  const q = new URL((await request).url()).searchParams;
+  expect(q.get("policy_id")).toBe("policy-1");
+  expect(q.get("client_id")).toBe("client-1");
+  expect(q.get("channel_id")).toBe("channel-1");
+  expect(q.get("from")).toBe("2026-09-12T16:00:00.000Z");
+  expect(q.get("to")).toBe("2026-09-13T16:00:00.000Z");
+  await expect(
+    page.getByRole("heading", { name: "审核记录", level: 1 }),
+  ).toBeVisible();
 });
 
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {

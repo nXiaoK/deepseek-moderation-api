@@ -3,9 +3,27 @@ import { computed, onMounted, ref } from "vue";
 import type { EChartsCoreOption } from "echarts/core";
 import AppIcon from "./AppIcon.vue";
 import DataChart from "./DataChart.vue";
-import { api, APIError } from "./api";
+import {
+  api,
+  APIError,
+  type Policy,
+  type ClientKey,
+  type ModelChannel,
+  type AnalysisLogFilter,
+} from "./api";
+defineProps<{
+  policies: Policy[];
+  clients: ClientKey[];
+  channels: ModelChannel[];
+}>();
 
 interface Metrics {
+  successful_calls: number;
+  failed_calls: number;
+  outcome_samples: number;
+  p50_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  p99_latency_ms: number | null;
   records: number;
   calls: number;
   cache_hits: number;
@@ -28,6 +46,20 @@ interface Point extends Metrics {
   time: string;
 }
 interface Analytics {
+  policy_id: string;
+  client_id: string;
+  channel_id: string;
+  errors: { code: string; calls: number }[];
+  requests?: {
+    records: number;
+    allowed: number;
+    flagged: number;
+    errors: number;
+    fallbacks: number;
+    p50_latency_ms: number | null;
+    p95_latency_ms: number | null;
+    p99_latency_ms: number | null;
+  };
   from: string;
   to: string;
   kind: string;
@@ -38,7 +70,10 @@ interface Analytics {
   models: ModelMetrics[];
   series: Point[];
 }
-const emit = defineEmits<{ unauthorized: [] }>();
+const emit = defineEmits<{
+  unauthorized: [];
+  logs: [filter: AnalysisLogFilter];
+}>();
 const presets = [
   { value: "1h", label: "1 小时" },
   { value: "24h", label: "24 小时" },
@@ -86,6 +121,38 @@ const palette = [
 const range = ref("24h"),
   model = ref(""),
   kind = ref("production");
+const policyID = ref(""),
+  clientID = ref(""),
+  channelID = ref("");
+const percent = (value: number | undefined, total: number | undefined) =>
+  total ? (((value || 0) / total) * 100).toFixed(1) + "%" : "—";
+function logsFor(
+  modelName = data.value?.model || "",
+  code = "",
+  bucket?: string,
+) {
+  const d = data.value;
+  if (!d) return;
+  let start = d.from,
+    end = d.to;
+  if (bucket && Number.isFinite(Date.parse(bucket))) {
+    const at = Date.parse(bucket);
+    start = new Date(Math.max(at, Date.parse(d.from))).toISOString();
+    end = new Date(
+      Math.min(at + d.interval_seconds * 1000, Date.parse(d.to)),
+    ).toISOString();
+  }
+  emit("logs", {
+    from: start,
+    to: end,
+    kind: d.kind,
+    model: modelName,
+    policy_id: d.policy_id || "",
+    client_id: d.client_id || "",
+    channel_id: d.channel_id || "",
+    error_code: code,
+  });
+}
 const busy = ref(false),
   error = ref(""),
   data = ref<Analytics | null>(null);
@@ -161,6 +228,9 @@ async function load() {
     range: range.value,
     model: model.value,
     kind: kind.value,
+    policy_id: policyID.value,
+    client_id: clientID.value,
+    channel_id: channelID.value,
   });
   if (range.value === "custom") {
     const start = new Date(`${from.value}+08:00`),
@@ -456,6 +526,47 @@ onMounted(load);
         </button>
       </div>
     </div>
+    <div class="analytics-dimensions">
+      <label
+        >策略<select v-model="policyID" :disabled="busy" @change="load">
+          <option value="">全部策略</option>
+          <option v-for="p in policies" :key="p.id" :value="p.id">
+            {{ p.name }}
+          </option>
+        </select></label
+      >
+      <label
+        >调用方<select v-model="clientID" :disabled="busy" @change="load">
+          <option value="">全部调用方</option>
+          <option v-for="c in clients" :key="c.id" :value="c.id">
+            {{ c.name }}
+          </option>
+        </select></label
+      >
+      <label
+        >模型通道<select v-model="channelID" :disabled="busy" @change="load">
+          <option value="">全部通道</option>
+          <option v-for="c in channels" :key="c.id" :value="c.id">
+            {{ c.name }}
+          </option>
+        </select></label
+      >
+      <button
+        v-if="policyID || clientID || channelID"
+        class="icon-button"
+        title="清除维度筛选"
+        aria-label="清除维度筛选"
+        :disabled="busy"
+        @click="
+          policyID = '';
+          clientID = '';
+          channelID = '';
+          load();
+        "
+      >
+        <AppIcon name="close" :size="16" />
+      </button>
+    </div>
     <form v-if="range === 'custom'" class="custom-range" @submit.prevent="load">
       <label
         >开始时间（北京时间）<input
@@ -568,6 +679,37 @@ onMounted(load);
           >待核对 {{ count(data.summary.pending_costs) }} 笔</span
         >
       </div>
+      <div class="performance-strip">
+        <span
+          >调用成功率<strong>{{
+            percent(data.summary.successful_calls, data.summary.outcome_samples)
+          }}</strong
+          ><small
+            >{{ count(data.summary.outcome_samples || 0) }} 次结果样本</small
+          ></span
+        >
+        <span
+          >缓存命中率<strong>{{
+            percent(
+              data.summary.cache_hits,
+              data.summary.calls + data.summary.cache_hits,
+            )
+          }}</strong></span
+        >
+        <span
+          >P95 调用耗时<strong>{{
+            latency(data.summary.p95_latency_ms)
+          }}</strong></span
+        >
+        <span
+          >P99 调用耗时<strong>{{
+            latency(data.summary.p99_latency_ms)
+          }}</strong></span
+        >
+        <button class="text-button" @click="logsFor()">
+          <AppIcon name="file" :size="16" />查看审核记录
+        </button>
+      </div>
       <div class="analytics-visuals">
         <section class="trend-section">
           <div class="panel-heading">
@@ -627,6 +769,7 @@ onMounted(load);
                 interval +
                 '统计，数据见下方时间明细'
               "
+              @select="logsFor(data.model, '', $event)"
             />
           </div>
         </section>
@@ -692,6 +835,9 @@ onMounted(load);
           平均耗时包含失败调用；速度按输出 Token
           总数除以对应调用总耗时计算，包含准备与响应等待。缺少耗时的历史记录不参与平均值，样本数见模型明细。
         </p>
+        <p>
+          调用成功率按有结果样本的实际上游尝试计算，缺少历史结果的调用不算成功；请求级统计仅覆盖仍在保留期内的审核记录。
+        </p>
       </details>
       <section class="panel model-comparison">
         <div class="panel-heading">
@@ -718,6 +864,8 @@ onMounted(load);
                 <th>已知费用</th>
                 <th>平均耗时</th>
                 <th>输出速度</th>
+                <th>调用成功率 / P95</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -780,11 +928,76 @@ onMounted(load);
                     >token/s</small
                   >
                 </td>
+                <td>
+                  {{ percent(row.successful_calls, row.outcome_samples)
+                  }}<small
+                    >{{ row.failed_calls || 0 }} 次失败 /
+                    {{ row.outcome_samples || 0 }} 次样本</small
+                  ><small>P95 {{ latency(row.p95_latency_ms) }}</small>
+                </td>
+                <td>
+                  <button
+                    class="icon-button"
+                    :aria-label="'查看 ' + row.model + ' 审核记录'"
+                    title="查看审核记录"
+                    @click="logsFor(row.model)"
+                  >
+                    <AppIcon name="file" :size="16" />
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
         <p v-if="!data.models.length" class="empty">没有符合条件的模型记录</p>
+      </section>
+      <section v-if="data.requests" class="panel">
+        <div class="panel-heading">
+          <h2>请求记录统计</h2>
+          <span class="muted small">仅含仍在保留期内的审核记录</span>
+        </div>
+        <div class="performance-strip request-performance">
+          <span
+            >请求数<strong>{{ count(data.requests.records) }}</strong></span
+          >
+          <span
+            >请求成功率<strong>{{
+              percent(
+                data.requests.allowed + data.requests.flagged,
+                data.requests.records,
+              )
+            }}</strong></span
+          >
+          <span
+            >策略命中<strong>{{ count(data.requests.flagged) }}</strong></span
+          >
+          <span
+            >多次调用比例<strong>{{
+              percent(data.requests.fallbacks, data.requests.records)
+            }}</strong></span
+          >
+          <span
+            >P50 / P95 / P99<strong class="percentile-values"
+              >{{ latency(data.requests.p50_latency_ms) }} /
+              {{ latency(data.requests.p95_latency_ms) }} /
+              {{ latency(data.requests.p99_latency_ms) }}</strong
+            ></span
+          >
+        </div>
+      </section>
+      <section v-if="data.errors?.length" class="panel">
+        <div class="panel-heading"><h2>调用错误分布</h2></div>
+        <div class="error-distribution">
+          <button
+            v-for="item in data.errors"
+            :key="item.code"
+            @click="logsFor(data.model, item.code)"
+          >
+            <code>{{ item.code }}</code
+            ><strong>{{ count(item.calls) }}</strong
+            ><AppIcon name="file" :size="14" />
+          </button>
+        </div>
       </section>
       <details v-if="data.summary.records" class="time-details">
         <summary>
@@ -798,6 +1011,7 @@ onMounted(load);
             <thead>
               <tr>
                 <th>时间（北京时间）</th>
+                <th></th>
                 <th>模型调用</th>
                 <th>Token</th>
                 <th>已知费用</th>
@@ -808,6 +1022,16 @@ onMounted(load);
             <tbody>
               <tr v-for="p in data.series" :key="p.time">
                 <td :title="time(p.time)">{{ bucketLabel(p.time) }}</td>
+                <td>
+                  <button
+                    class="icon-button"
+                    title="查看时段记录"
+                    :aria-label="'查看 ' + bucketLabel(p.time) + ' 记录'"
+                    @click="logsFor(data.model, '', p.time)"
+                  >
+                    <AppIcon name="file" :size="14" />
+                  </button>
+                </td>
                 <td>{{ count(p.calls) }}</td>
                 <td>
                   {{ count(p.total_tokens)
@@ -836,6 +1060,56 @@ onMounted(load);
 </template>
 
 <style scoped>
+.analytics-dimensions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+}
+.analytics-dimensions label {
+  flex: 1;
+  min-width: 140px;
+}
+.analytics-dimensions select {
+  font-size: 12px;
+}
+.performance-strip {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 0 0 20px;
+}
+.performance-strip > span {
+  flex: 1;
+  min-width: 120px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.performance-strip strong {
+  display: block;
+  color: #445269;
+  font-size: 19px;
+  font-weight: 550;
+}
+.performance-strip small {
+  display: block;
+  font-size: 10px;
+}
+.request-performance .percentile-values {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.error-distribution {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-bottom: 16px;
+}
+.error-distribution button {
+  gap: 10px;
+}
 .analytics-toolbar {
   display: flex;
   justify-content: space-between;

@@ -118,6 +118,12 @@ const log = {
   attempts: [],
 };
 const zero = {
+  successful_calls: 0,
+  failed_calls: 0,
+  outcome_samples: 0,
+  p50_latency_ms: null as number | null,
+  p95_latency_ms: null as number | null,
+  p99_latency_ms: null as number | null,
   records: 0,
   calls: 0,
   cache_hits: 0,
@@ -204,6 +210,10 @@ export function analytics(url: URL, state = "populated") {
     output_tokens_per_second: state === "no-latency" ? null : 25.4 + i * 3,
   }));
   return {
+    policy_id: url.searchParams.get("policy_id") || "",
+    client_id: url.searchParams.get("client_id") || "",
+    channel_id: url.searchParams.get("channel_id") || "",
+    errors: [],
     from: "2026-09-12T16:00:00Z",
     to: "2026-09-13T16:00:00Z",
     kind: url.searchParams.get("kind"),

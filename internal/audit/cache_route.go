@@ -92,7 +92,7 @@ func (s *Server) cachedRoute(ctx context.Context, p Policy, candidates []routeCa
 		}
 		usage := Usage{Reported: true, ActualModel: actual}
 		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		cost, err := s.Store.SettleCost(settleCtx, entry, usage, time.Now())
+		cost, err := s.Store.SettleCost(settleCtx, entry, usage, time.Now(), nil)
 		cancel()
 		if err != nil {
 			return Assessment{}, false, problem(503, "cost_record_unavailable", "缓存费用记录暂时不可用")

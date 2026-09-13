@@ -33,6 +33,7 @@ import {
   type Policy,
   type Provider,
   type ModelChannel,
+  type AnalysisLogFilter,
 } from "./api";
 
 const AnalyticsPanel = defineAsyncComponent(
@@ -464,6 +465,26 @@ async function openLog(id: string) {
     detail.value = await api(`/admin/audit-logs/${id}`);
   });
 }
+async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
+  const localInput = (value: string) => {
+    const date = new Date(value);
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, -1);
+  };
+  logFrom.value = localInput(filter.from);
+  logTo.value = localInput(filter.to);
+  logKind.value = filter.kind === "all" ? "" : filter.kind;
+  logModel.value = filter.model;
+  logPolicy.value = filter.policy_id;
+  logClient.value = filter.client_id;
+  logChannel.value = filter.channel_id;
+  logErrorCode.value = filter.error_code || "";
+  logRequestID.value = "";
+  logResult.value = "";
+  logPage.value = 1;
+  await navigate("logs");
+}
 async function changePassword() {
   await run(async () => {
     await api("/admin/auth/password", "PUT", {
@@ -724,6 +745,10 @@ window.addEventListener("beforeunload", (e) => {
 
         <AnalyticsPanel
           v-if="page === 'analytics'"
+          :policies="policies"
+          :clients="keys"
+          :channels="channels"
+          @logs="inspectAnalyticsLogs"
           @unauthorized="
             user = '';
             setCSRF('');
@@ -1041,7 +1066,7 @@ window.addEventListener("beforeunload", (e) => {
                   maxlength="200"
               /></label>
               <label
-                >最终模型<input
+                >审核模型<input
                   v-model="logModel"
                   placeholder="全部模型"
                   maxlength="200"
@@ -1088,8 +1113,15 @@ window.addEventListener("beforeunload", (e) => {
                   </option>
                 </select></label
               ><label
-                >开始<input v-model="logFrom" type="datetime-local" /></label
-              ><label>结束<input v-model="logTo" type="datetime-local" /></label
+                >开始<input
+                  v-model="logFrom"
+                  type="datetime-local"
+                  step="any" /></label
+              ><label
+                >结束<input
+                  v-model="logTo"
+                  type="datetime-local"
+                  step="any" /></label
               ><button :disabled="busy">
                 <AppIcon name="filters" :size="16" />筛选
               </button>

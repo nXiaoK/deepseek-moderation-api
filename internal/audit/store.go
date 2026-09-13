@@ -422,13 +422,13 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		add("id=$%d", f.RequestID)
 	}
 	if f.Model != "" {
-		add("metadata->>'model'=$%d", f.Model)
+		add("(metadata->>'model'=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'model'=$%[1]d OR item->'usage'->>'actual_model'=$%[1]d))", f.Model)
 	}
 	if f.ChannelID != "" {
 		add("(metadata->>'channel_id'=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'channel_id'=$%[1]d))", f.ChannelID)
 	}
 	if f.ErrorCode != "" {
-		add("error_code=$%d", f.ErrorCode)
+		add("(error_code=$%[1]d OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(metadata->'attempts')='array' THEN metadata->'attempts' ELSE '[]'::jsonb END) item WHERE item->>'error_code'=$%[1]d))", f.ErrorCode)
 	}
 	switch f.Result {
 	case "flagged":
@@ -442,7 +442,7 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		add("created_at >= $%d::timestamptz", f.From)
 	}
 	if f.To != "" {
-		add("created_at <= $%d::timestamptz", f.To)
+		add("created_at < $%d::timestamptz", f.To)
 	}
 	clause := strings.Join(where, " AND ")
 	var count int

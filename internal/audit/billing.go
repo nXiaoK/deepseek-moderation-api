@@ -171,7 +171,11 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 	}
 	return entry, nil
 }
-func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage, end time.Time) (*CostView, error) {
+func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage, end time.Time, outcome ...error) (*CostView, error) {
+	code := ""
+	if len(outcome) > 0 && outcome[0] != nil {
+		code = errorCode(outcome[0])
+	}
 	amount := int64(0)
 	status, note := "zero", "未发起上游请求，无新增模型费用"
 	var amountArg any = int64(0)
@@ -224,7 +228,7 @@ func (s *Store) SettleCost(ctx context.Context, entry *CostReservation, u Usage,
 	if u.Attempted && !end.Before(entry.StartedAt) {
 		latency = end.Sub(entry.StartedAt).Milliseconds()
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7,latency_ms=$8,request_sent=$9 WHERE id=$6 AND status IN ('reserved','local_cache')`, amountArg, status, string(raw), end, note, entry.ID, period, latency, u.Attempted)
+	_, err = tx.ExecContext(ctx, `UPDATE audit_costs SET amount_pico=$1,status=$2,usage=$3,settled_at=$4,note=$5,tariff_period=$7,latency_ms=$8,request_sent=$9,error_code=$10,outcome_known=$11 WHERE id=$6 AND status IN ('reserved','local_cache')`, amountArg, status, string(raw), end, note, entry.ID, period, latency, u.Attempted, code, len(outcome) > 0)
 	if err != nil {
 		return nil, err
 	}

@@ -10,12 +10,19 @@ import (
 )
 
 type AnalyticsFilter struct {
-	From, To        time.Time
-	Kind, Model     string
-	IntervalSeconds int
+	From, To                      time.Time
+	Kind, Model                   string
+	PolicyID, ClientID, ChannelID string
+	IntervalSeconds               int
 }
 
 type AnalyticsMetrics struct {
+	SuccessfulCalls       int64    `json:"successful_calls"`
+	FailedCalls           int64    `json:"failed_calls"`
+	OutcomeSamples        int64    `json:"outcome_samples"`
+	P50LatencyMS          *float64 `json:"p50_latency_ms"`
+	P95LatencyMS          *float64 `json:"p95_latency_ms"`
+	P99LatencyMS          *float64 `json:"p99_latency_ms"`
 	Records               int64    `json:"records"`
 	Calls                 int64    `json:"calls"`
 	CacheHits             int64    `json:"cache_hits"`
@@ -40,6 +47,11 @@ type AnalyticsPoint struct {
 	AnalyticsMetrics
 }
 type AnalyticsResponse struct {
+	PolicyID        string           `json:"policy_id"`
+	ClientID        string           `json:"client_id"`
+	ChannelID       string           `json:"channel_id"`
+	Errors          []AnalyticsError `json:"errors"`
+	Requests        RequestMetrics   `json:"requests"`
 	From            time.Time        `json:"from"`
 	To              time.Time        `json:"to"`
 	Kind            string           `json:"kind"`
@@ -50,9 +62,29 @@ type AnalyticsResponse struct {
 	Models          []AnalyticsModel `json:"models"`
 	Series          []AnalyticsPoint `json:"series"`
 }
+type AnalyticsError struct {
+	Code  string `json:"code"`
+	Calls int64  `json:"calls"`
+}
+type RequestMetrics struct {
+	Records      int64    `json:"records"`
+	Allowed      int64    `json:"allowed"`
+	Flagged      int64    `json:"flagged"`
+	Errors       int64    `json:"errors"`
+	Fallbacks    int64    `json:"fallbacks"`
+	P50LatencyMS *float64 `json:"p50_latency_ms"`
+	P95LatencyMS *float64 `json:"p95_latency_ms"`
+	P99LatencyMS *float64 `json:"p99_latency_ms"`
+}
 
 func parseAnalyticsFilter(q url.Values, now time.Time) (AnalyticsFilter, error) {
 	f := AnalyticsFilter{To: now.UTC(), Kind: q.Get("kind"), Model: strings.TrimSpace(q.Get("model"))}
+	f.PolicyID, f.ClientID, f.ChannelID = q.Get("policy_id"), q.Get("client_id"), q.Get("channel_id")
+	for _, value := range []string{f.PolicyID, f.ClientID, f.ChannelID} {
+		if len(value) > 200 {
+			return f, problem(400, "invalid_filter", "筛选值过长")
+		}
+	}
 	if f.Kind == "" {
 		f.Kind = "production"
 	}
@@ -114,23 +146,28 @@ func (s *Server) analytics(w http.ResponseWriter, r *http.Request) error {
 // Cost rows are per attempt, so retries belong to the model that incurred
 // them. Current accounting values also reflect manual cost reconciliation.
 // Older rows recover timing from retained request metadata when available.
-const analyticsSQL = `WITH base AS (
+const analyticsBaseSQL = `WITH base AS (
  SELECT COALESCE(NULLIF(c.usage->>'actual_model',''),c.model) AS effective_model,
  date_bin($4 * INTERVAL '1 second',c.started_at,TIMESTAMPTZ '2000-01-01 00:00:00+08') AS bucket,
  c.status,c.amount_pico,c.reserved_pico,c.usage,
+ (c.outcome_known OR a.item IS NOT NULL) AS outcome_known,
+ CASE WHEN c.outcome_known THEN c.error_code ELSE COALESCE(a.item->>'error_code','') END AS error_code,
  COALESCE(c.request_sent,(a.item->>'sent')::boolean,c.status NOT IN ('local_cache','zero','reserved')) AS sent,
  COALESCE(c.latency_ms,CASE WHEN (a.item->>'sent')::boolean THEN (a.item->>'latency_ms')::bigint END) AS latency
  FROM audit_costs c
- LEFT JOIN audit_requests r ON c.latency_ms IS NULL AND c.request_sent IS NULL AND r.id=c.request_id
+ LEFT JOIN audit_requests r ON ((c.latency_ms IS NULL AND c.request_sent IS NULL) OR NOT c.outcome_known) AND r.id=c.request_id
  LEFT JOIN LATERAL (
   SELECT item FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.metadata->'attempts')='array' THEN r.metadata->'attempts' ELSE '[]'::jsonb END) item
   WHERE item->>'id'=c.id LIMIT 1
  ) a ON TRUE
  WHERE c.started_at >= $1 AND c.started_at < $2 AND ($3='all' OR c.kind=$3)
+ AND ($6='' OR c.policy_id=$6) AND ($7='' OR c.client_id=$7) AND ($8='' OR c.channel_id=$8)
 ), eligible AS (
  SELECT *,COALESCE((usage->>'reported')::boolean,FALSE) AS reported FROM base
  WHERE ($5='' OR effective_model=$5)
 )
+`
+const analyticsSQL = analyticsBaseSQL + `
 SELECT GROUPING(effective_model),GROUPING(bucket),COALESCE(effective_model,''),bucket,
  COUNT(*),COUNT(*) FILTER(WHERE sent),COUNT(*) FILTER(WHERE status='local_cache'),
  COALESCE(SUM((usage->>'prompt_tokens')::bigint) FILTER(WHERE sent AND reported),0),
@@ -142,17 +179,25 @@ SELECT GROUPING(effective_model),GROUPING(bucket),COALESCE(effective_model,''),b
  (AVG(latency) FILTER(WHERE sent AND latency IS NOT NULL))::double precision,
  COUNT(*) FILTER(WHERE sent AND latency IS NOT NULL),
  (SUM((usage->>'completion_tokens')::bigint) FILTER(WHERE sent AND reported AND latency>0))::double precision
- / NULLIF((SUM(latency) FILTER(WHERE sent AND reported AND latency>0))::double precision/1000,0)
+ / NULLIF((SUM(latency) FILTER(WHERE sent AND reported AND latency>0))::double precision/1000,0),
+ COUNT(*) FILTER(WHERE sent AND outcome_known AND error_code=''),
+ COUNT(*) FILTER(WHERE sent AND outcome_known AND error_code<>''),
+ COUNT(*) FILTER(WHERE sent AND outcome_known),
+ percentile_cont(0.5) WITHIN GROUP(ORDER BY latency) FILTER(WHERE sent AND latency IS NOT NULL),
+ percentile_cont(0.95) WITHIN GROUP(ORDER BY latency) FILTER(WHERE sent AND latency IS NOT NULL),
+ percentile_cont(0.99) WITHIN GROUP(ORDER BY latency) FILTER(WHERE sent AND latency IS NOT NULL)
 FROM eligible GROUP BY GROUPING SETS ((),(effective_model),(bucket)) ORDER BY effective_model,bucket`
 
 func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResponse, error) {
 	out := AnalyticsResponse{From: f.From, To: f.To, Kind: f.Kind, Model: f.Model, IntervalSeconds: f.IntervalSeconds, AvailableModels: []string{}, Models: []AnalyticsModel{}, Series: []AnalyticsPoint{}}
+	out.PolicyID, out.ClientID, out.ChannelID = f.PolicyID, f.ClientID, f.ChannelID
+	out.Errors = []AnalyticsError{}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return out, err
 	}
 	defer tx.Rollback()
-	options, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(usage->>'actual_model',''),model) FROM audit_costs WHERE started_at >= $1 AND started_at < $2 AND ($3='all' OR kind=$3) ORDER BY 1`, f.From, f.To, f.Kind)
+	options, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(usage->>'actual_model',''),model) FROM audit_costs WHERE started_at >= $1 AND started_at < $2 AND ($3='all' OR kind=$3) AND ($4='' OR policy_id=$4) AND ($5='' OR client_id=$5) AND ($6='' OR channel_id=$6) ORDER BY 1`, f.From, f.To, f.Kind, f.PolicyID, f.ClientID, f.ChannelID)
 	if err != nil {
 		return out, err
 	}
@@ -169,7 +214,8 @@ func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResp
 	if err != nil {
 		return out, err
 	}
-	rows, err := tx.QueryContext(ctx, analyticsSQL, f.From, f.To, f.Kind, f.IntervalSeconds, f.Model)
+	args := []any{f.From, f.To, f.Kind, f.IntervalSeconds, f.Model, f.PolicyID, f.ClientID, f.ChannelID}
+	rows, err := tx.QueryContext(ctx, analyticsSQL, args...)
 	if err != nil {
 		return out, err
 	}
@@ -181,7 +227,8 @@ func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResp
 		var m AnalyticsMetrics
 		var known, estimated, reserved int64
 		var latency, speed sql.NullFloat64
-		err = rows.Scan(&gm, &gb, &model, &bucket, &m.Records, &m.Calls, &m.CacheHits, &m.InputTokens, &m.OutputTokens, &m.TotalTokens, &m.UnknownUsage, &known, &estimated, &reserved, &m.PendingCosts, &latency, &m.LatencySamples, &speed)
+		var p50, p95, p99 sql.NullFloat64
+		err = rows.Scan(&gm, &gb, &model, &bucket, &m.Records, &m.Calls, &m.CacheHits, &m.InputTokens, &m.OutputTokens, &m.TotalTokens, &m.UnknownUsage, &known, &estimated, &reserved, &m.PendingCosts, &latency, &m.LatencySamples, &speed, &m.SuccessfulCalls, &m.FailedCalls, &m.OutcomeSamples, &p50, &p95, &p99)
 		if err != nil {
 			rows.Close()
 			return out, err
@@ -193,6 +240,7 @@ func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResp
 		if speed.Valid {
 			m.OutputTokensPerSecond = &speed.Float64
 		}
+		m.P50LatencyMS, m.P95LatencyMS, m.P99LatencyMS = analyticsFloat(p50), analyticsFloat(p95), analyticsFloat(p99)
 		switch {
 		case gm == 1 && gb == 1:
 			out.Summary = m
@@ -207,6 +255,31 @@ func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResp
 	if err != nil {
 		return out, err
 	}
+	issues, err := tx.QueryContext(ctx, analyticsBaseSQL+` SELECT error_code,COUNT(*) FROM eligible WHERE sent AND outcome_known AND error_code<>'' GROUP BY error_code ORDER BY COUNT(*) DESC,error_code LIMIT 20`, args...)
+	if err != nil {
+		return out, err
+	}
+	for issues.Next() {
+		var item AnalyticsError
+		if err := issues.Scan(&item.Code, &item.Calls); err != nil {
+			issues.Close()
+			return out, err
+		}
+		out.Errors = append(out.Errors, item)
+	}
+	err = issues.Err()
+	issues.Close()
+	if err != nil {
+		return out, err
+	}
+	var p50, p95, p99 sql.NullFloat64
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER(WHERE r.error_code='' AND NOT r.flagged),COUNT(*) FILTER(WHERE r.flagged),COUNT(*) FILTER(WHERE r.error_code<>''),COUNT(*) FILTER(WHERE (r.metadata->>'attempt_count')::int>1),percentile_cont(0.5) WITHIN GROUP(ORDER BY (r.metadata->>'latency_ms')::bigint),percentile_cont(0.95) WITHIN GROUP(ORDER BY (r.metadata->>'latency_ms')::bigint),percentile_cont(0.99) WITHIN GROUP(ORDER BY (r.metadata->>'latency_ms')::bigint)
+ FROM audit_requests r WHERE r.created_at>=$1 AND r.created_at<$2 AND r.expires_at>NOW() AND ($3='all' OR r.kind=$3) AND ($4='' OR r.policy_id=$4) AND ($5='' OR r.client_id=$5)
+ AND (($6='' AND $7='') OR EXISTS(SELECT 1 FROM audit_costs c WHERE c.request_id=r.id AND ($6='' OR COALESCE(NULLIF(c.usage->>'actual_model',''),c.model)=$6) AND ($7='' OR c.channel_id=$7)))`, f.From, f.To, f.Kind, f.PolicyID, f.ClientID, f.Model, f.ChannelID).Scan(&out.Requests.Records, &out.Requests.Allowed, &out.Requests.Flagged, &out.Requests.Errors, &out.Requests.Fallbacks, &p50, &p95, &p99)
+	if err != nil {
+		return out, err
+	}
+	out.Requests.P50LatencyMS, out.Requests.P95LatencyMS, out.Requests.P99LatencyMS = analyticsFloat(p50), analyticsFloat(p95), analyticsFloat(p99)
 	if err = tx.Commit(); err != nil {
 		return out, err
 	}
@@ -221,4 +294,10 @@ func (s *Store) Analytics(ctx context.Context, f AnalyticsFilter) (AnalyticsResp
 		out.Series = append(out.Series, AnalyticsPoint{at, m})
 	}
 	return out, nil
+}
+func analyticsFloat(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Float64
 }

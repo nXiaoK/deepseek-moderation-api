@@ -590,7 +590,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			log.AttemptCount++
 		}
 		settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		attempt.Cost, err = s.Store.SettleCost(settleCtx, entry, usage, time.Now())
+		attempt.Cost, err = s.Store.SettleCost(settleCtx, entry, usage, time.Now(), e)
 		settleCancel()
 		log.Attempts = append(log.Attempts, attempt)
 		response.Usage.PromptTokens += usage.PromptTokens
