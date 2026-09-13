@@ -452,6 +452,16 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		}
 		candidates = append(candidates, routeCandidate{c, b, cfg, key, digest(c.CacheEpoch + key)})
 	}
+	if kind == "production" && p.Config.ResultCacheTTL > 0 {
+		release, err := s.cacheLock(ctx, p, candidates, client, input, images)
+		if err != nil {
+			return Assessment{}, err
+		}
+		defer release()
+		if assessment, hit, err := s.cachedRoute(ctx, p, candidates, client, input, response, log, images); err != nil || hit {
+			return assessment, err
+		}
+	}
 	used := map[string]bool{}
 	lastErr := problem(503, "no_available_channel", "当前没有可用的审核模型通道")
 	if len(candidates) == 0 && excludedPrice {

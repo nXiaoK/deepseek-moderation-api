@@ -14,10 +14,11 @@ import (
 )
 
 type Engine struct {
-	Client  *http.Client
-	slots   chan struct{}
-	routeMu sync.Mutex
-	routes  map[string]*channelState
+	Client    *http.Client
+	slots     chan struct{}
+	routeMu   sync.Mutex
+	routes    map[string]*channelState
+	cacheGate keyedGate
 }
 
 func NewEngine(concurrency int) *Engine {
