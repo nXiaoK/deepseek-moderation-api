@@ -41,7 +41,11 @@ func run() error {
 	if err = store.Bootstrap(startup, env("ADMIN_USER", "admin"), os.Getenv("ADMIN_PASSWORD")); err != nil {
 		return err
 	}
-	app, err := audit.NewServer(store, env("PUBLIC_URL", "http://localhost:8090"), env("STATIC_DIR", "frontend/dist"))
+	limits, err := audit.RuntimeConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	app, err := audit.NewServer(store, env("PUBLIC_URL", "http://localhost:8090"), env("STATIC_DIR", "frontend/dist"), limits)
 	if err != nil {
 		return err
 	}

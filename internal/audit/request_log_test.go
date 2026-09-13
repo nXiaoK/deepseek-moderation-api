@@ -82,12 +82,12 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 		{"oversized", `{"model":"abuse-audit-v1","input":"` + strings.Repeat("x", 1024*1024+1) + `"}`, key, "request_validation", 413, false},
 		{"unknown_policy", `{"model":"missing","input":"test"}`, key, "policy_check", 404, false},
 		{"forbidden", valid, forbidden, "policy_check", 403, false},
-		{"image", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "completed", 200, false},
+		{"image", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,cHJpdmF0ZS1pbWFnZQ=="}}]}`, key, "completed", 200, false},
 		{"empty", `{"model":"abuse-audit-v1","input":""}`, key, "input_validation", 400, false},
 		{"success", valid, key, "completed", 200, false},
-		{"image_fallback", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image` + strings.Repeat("a", 1024*1024) + `"}}]}`, key, "completed", 200, false},
+		{"image_fallback", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,cHJpdmF0ZS1pbWFnZQAA` + strings.Repeat("a", 1024*1024) + `"}}]}`, key, "completed", 200, false},
 		{"model_failure", valid, key, "audit", 502, false},
-		{"input_storage_off", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "completed", 200, false},
+		{"input_storage_off", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,cHJpdmF0ZS1pbWFnZQ=="}}]}`, key, "completed", 200, false},
 		{"disabled_policy", valid, key, "policy_check", 503, false},
 		{"revoked_key", valid, key, "authentication", 401, false},
 	}
@@ -170,7 +170,7 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 			if tt.name == "image" && (log.Request.ImageCount != 1 || log.Request.TextChars != 18 || log.Input != "inspect screenshot") {
 				t.Fatalf("image metadata/input: %+v", log)
 			}
-			if tt.name == "image" && (log.Request.InputScope != "text_and_images" || !strings.Contains(modelInput, "private-image")) {
+			if tt.name == "image" && (log.Request.InputScope != "text_and_images" || !strings.Contains(modelInput, "data:image/png;base64,cHJpdmF0ZS1pbWFnZQ==")) {
 				t.Fatal("image was not forwarded")
 			}
 			if tt.name == "image_fallback" {

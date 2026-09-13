@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -55,7 +56,11 @@ type AuditImage struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-func parseModerationInput(raw json.RawMessage) (string, []AuditImage, error) {
+func parseModerationInput(raw json.RawMessage, imageLimit ...int) (string, []AuditImage, error) {
+	maxImages := DefaultRuntimeConfig().MaxImages
+	if len(imageLimit) > 0 {
+		maxImages = imageLimit[0]
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		text, err := validateText(text)
@@ -64,6 +69,9 @@ func parseModerationInput(raw json.RawMessage) (string, []AuditImage, error) {
 	var parts []json.RawMessage
 	if json.Unmarshal(raw, &parts) != nil || len(parts) == 0 {
 		return "", nil, problem(400, "invalid_input", "input 必须为文本或文本与图片内容块数组")
+	}
+	if len(parts) > 1024 {
+		return "", nil, problem(413, "input_too_large", "内容块最多 1024 个")
 	}
 	var texts []string
 	var images []AuditImage
@@ -83,6 +91,9 @@ func parseModerationInput(raw json.RawMessage) (string, []AuditImage, error) {
 			}
 			texts = append(texts, *part.Text)
 		case "image_url":
+			if len(images) >= maxImages {
+				return "", nil, problem(413, "too_many_images", "图片数量超过配置上限")
+			}
 			var image AuditImage
 			if part.Text != nil || strictJSON(part.ImageURL, &image) != nil || !validAuditImage(image) {
 				return "", nil, problem(400, "invalid_input", "图片需提供 HTTP(S) URL 或 data:image Base64，detail 仅支持 auto、low、high")
@@ -109,7 +120,19 @@ func validAuditImage(image AuditImage) bool {
 	}
 	if strings.HasPrefix(image.URL, "data:image/") {
 		header, data, ok := strings.Cut(image.URL, ",")
-		return ok && strings.HasSuffix(header, ";base64") && data != ""
+		if !ok || data == "" {
+			return false
+		}
+		switch header {
+		case "data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64", "data:image/gif;base64":
+		default:
+			return false
+		}
+		n, err := io.Copy(io.Discard, base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(data)))
+		return err == nil && n > 0
+	}
+	if len(image.URL) > 8192 {
+		return false
 	}
 	u, err := url.Parse(image.URL)
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Hostname() != "" && u.User == nil

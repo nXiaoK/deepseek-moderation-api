@@ -69,9 +69,9 @@ func TestTextOnlyChannelRouting(t *testing.T) {
 		status                               int
 	}{
 		{"text_small", "https://example.com/private-image", "inspect screenshot", primary.Model, "text_only", true, true, false, 200},
-		{"text_large", "data:image/png;base64,private-image" + strings.Repeat("a", 1<<20), "inspect screenshot", primary.Model, "text_only", true, true, false, 200},
+		{"text_large", "data:image/png;base64,cHJpdmF0ZS1pbWFnZQAA" + strings.Repeat("a", 1<<20), "inspect screenshot", primary.Model, "text_only", true, true, false, 200},
 		{"multimodal", "https://example.com/private-image", "inspect screenshot", primary.Model, "text_and_images", false, true, false, 200},
-		{"multimodal_large", "data:image/png;base64,private-image" + strings.Repeat("a", 1<<20), "inspect screenshot", primary.Model, "text_and_images", false, true, false, 200},
+		{"multimodal_large", "data:image/png;base64,cHJpdmF0ZS1pbWFnZQAA" + strings.Repeat("a", 1<<20), "inspect screenshot", primary.Model, "text_and_images", false, true, false, 200},
 		{"image_only", "https://example.com/private-image", "", backup.Model, "text_and_images", true, false, false, 200},
 		{"no_text", "https://example.com/private-image", "", "", "", true, true, false, 400},
 		{"text_to_image", "https://example.com/private-image", "inspect screenshot", primary.Model + "," + backup.Model, "text_and_images", true, false, true, 200},

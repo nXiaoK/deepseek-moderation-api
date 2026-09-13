@@ -28,6 +28,9 @@ type Server struct {
 	Secure        bool
 	StaticDir     string
 	dummyPassword string
+	Runtime       RuntimeConfig
+	admission     requestAdmission
+	trialSlots    chan struct{}
 }
 type session struct {
 	Username  string
@@ -37,7 +40,14 @@ type session struct {
 type sessionKey struct{}
 type endpoint func(http.ResponseWriter, *http.Request) error
 
-func NewServer(store *Store, origin, static string) (*Server, error) {
+func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*Server, error) {
+	config := DefaultRuntimeConfig()
+	if len(options) > 0 {
+		config = options[0]
+	}
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("PUBLIC_URL must be an origin without a path")
@@ -49,7 +59,7 @@ func NewServer(store *Store, origin, static string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Store: store, Engine: NewEngine(16), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash}, nil
+	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency)}, nil
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -338,6 +348,11 @@ func (s *Server) policyState(w http.ResponseWriter, r *http.Request) error {
 	return s.getPolicy(w, r)
 }
 func (s *Server) testPolicy(w http.ResponseWriter, r *http.Request) error {
+	release, err := s.admission.acquire(r.ContentLength, 1<<20)
+	if err != nil {
+		return err
+	}
+	defer release()
 	var in struct {
 		Input     string          `json:"input"`
 		Config    *PolicySettings `json:"config"`
@@ -449,6 +464,11 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 		return problem(429, "rate_limited", "调用额度已达上限")
 	}
 	a.log.Request.Stage = "request_validation"
+	release, err := s.admission.acquire(r.ContentLength, moderationImageBodyLimit)
+	if err != nil {
+		return err
+	}
+	defer release()
 	in, _, err := readModerationRequest(w, r)
 	if err != nil {
 		return err
@@ -473,7 +493,7 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 		return problem(503, "policy_unavailable", "审核策略已停用")
 	}
 	a.log.Request.Stage = "input_validation"
-	text, images, err := parseModerationInput(in.Input)
+	text, images, err := parseModerationInput(in.Input, s.Runtime.MaxImages)
 	if err != nil {
 		return err
 	}

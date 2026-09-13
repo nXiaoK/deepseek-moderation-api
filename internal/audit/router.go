@@ -391,6 +391,14 @@ func errorCode(err error) string {
 	return "internal_error"
 }
 func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, response *Response, log *AuditLog, images ...AuditImage) (Assessment, error) {
+	if kind == "test" {
+		select {
+		case s.trialSlots <- struct{}{}:
+			defer func() { <-s.trialSlots }()
+		default:
+			return Assessment{}, problem(503, "trial_capacity_exceeded", "后台试跑并发已满，请稍后重试")
+		}
+	}
 	if err := p.Config.Validate(); err != nil {
 		return Assessment{}, problem(400, "invalid_config", err.Error())
 	}
