@@ -44,24 +44,19 @@ docker compose up -d --build
 
 ## 本地开发
 
-使用独立本地 PostgreSQL；设置 `.env` 中 DATABASE_URL。以下仅适用于全新本机开发数据库，不用于生产：
+安装 Go 1.26+、Node 20.19+、pnpm 10，并启动 Docker Desktop / OrbStack 后，在项目根目录执行：
 
 ```sh
-docker run -d --name deepseek-audit-dev-db \
-  -e POSTGRES_USER=audit -e POSTGRES_DB=audit \
-  -e POSTGRES_HOST_AUTH_METHOD=trust \
-  -p 127.0.0.1:55439:5432 postgres:17-alpine
-cd frontend
-pnpm install --frozen-lockfile
-pnpm build
-cd ..
-set -a
-. ./.env
-set +a
-go run ./cmd/server
+./dev.sh
 ```
 
-后端同源提供构建后的后台。使用 Vite 热更新时，将 PUBLIC_URL 设为浏览器实际使用的 `http://localhost:5173`，再启动后端及 `pnpm dev`；CSRF 来源校验使用该值。
+脚本自动生成缺失的 `.env`、安装前端依赖、编译并启动 Go 后端和 Vite。打开 **http://localhost:5173**，登录信息见 `.env` 的 `ADMIN_USER` / `ADMIN_PASSWORD`；已有账号的密码以数据库为准。前端支持热更新，修改 Go 代码后需按 `Ctrl+C` 并重新执行脚本。
+
+使用默认 `DATABASE_URL` 时，脚本创建或启动 `deepseek-audit-dev-db`（PostgreSQL 17），仅绑定 `127.0.0.1:55439`，使用本机开发专用的 trust 认证。退出脚本会停止前后端，数据库及数据保留；需要停止数据库时运行 `docker stop deepseek-audit-dev-db`。
+
+使用已有 PostgreSQL 时，在 `.env` 中设置独立开发数据库的 `DATABASE_URL`，运行 `./dev.sh --no-db`；自定义 `DATABASE_URL` 时脚本也会自动跳过 Docker 管理。不要连接生产数据库。已有 `.env` 不会被覆盖，脚本会加载其中的配置，并仅对本次开发进程将 `LISTEN_ADDR` 设为 `127.0.0.1:8090`、`PUBLIC_URL` 设为 `http://localhost:5173`，与 Vite 代理及 CSRF 来源校验保持一致。8090 或 5173 已被占用时脚本报错退出。
+
+如需后端同源提供后台，可运行 `pnpm --dir frontend build`，再加载 `.env` 并运行 `go run ./cmd/server`，此时 `PUBLIC_URL` 应与后端访问地址一致（默认 `http://localhost:8090`）。
 
 ## sub2api 接入
 
