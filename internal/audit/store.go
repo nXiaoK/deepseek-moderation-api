@@ -13,9 +13,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-//go:embed schema.sql
-var schema string
-
 //go:embed initial-prompt.txt
 var InitialPrompt string
 
@@ -44,7 +41,7 @@ func OpenStore(ctx context.Context, dsn string, vault *Vault) (*Store, error) {
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(846274901)"); err == nil {
-		_, err = tx.ExecContext(ctx, schema)
+		err = applyMigrations(ctx, tx)
 	}
 	if err == nil {
 		err = tx.Commit()
