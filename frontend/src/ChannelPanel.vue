@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import AppIcon from "./AppIcon.vue";
 import { api, type ModelChannel, type Credential } from "./api";
 const props = defineProps<{
   channels: ModelChannel[];
@@ -104,8 +105,17 @@ async function remove(c: ModelChannel) {
         </p>
       </div>
       <div class="row">
-        <button @click="emit('changed')" :disabled="busy">刷新状态</button
-        ><button @click="emit('credentials')">管理连接密钥</button>
+        <button
+          class="icon-button"
+          title="刷新状态"
+          aria-label="刷新状态"
+          @click="emit('changed')"
+          :disabled="busy"
+        >
+          <AppIcon name="refresh" :size="16" /></button
+        ><button @click="emit('credentials')">
+          <AppIcon name="link" :size="16" />管理连接密钥
+        </button>
       </div>
     </div>
     <div v-if="!channels.length" class="empty">
@@ -133,20 +143,53 @@ async function remove(c: ModelChannel) {
               >
               <small v-if="c.text_only">文本模型 · 自动忽略图片</small>
             </td>
-            <td>{{ health(c) }}</td>
+            <td>
+              <span
+                class="badge"
+                :class="
+                  !c.enabled
+                    ? 'gray'
+                    : !c.credential_active ||
+                        c.health.status === 'configuration_error'
+                      ? 'red'
+                      : c.health.status === 'ready'
+                        ? 'green'
+                        : 'amber'
+                "
+                >{{ health(c) }}</span
+              >
+            </td>
             <td>{{ c.health.in_flight }} / {{ c.max_concurrency }}</td>
             <td>{{ c.health.calls }} / {{ c.health.failures }}</td>
             <td>{{ c.policy_names.join("、") || "未绑定" }}</td>
             <td>
               <div class="row">
-                <button @click="edit(c)" :disabled="busy">编辑</button
-                ><button @click="clear(c)" :disabled="busy">
-                  清缓存 / 重试连接</button
+                <button
+                  class="icon-button"
+                  title="编辑通道"
+                  :aria-label="'编辑 ' + c.name"
+                  @click="edit(c)"
+                  :disabled="busy"
+                >
+                  <AppIcon name="edit" :size="16" /></button
                 ><button
+                  class="icon-button"
+                  title="清缓存 / 重试连接"
+                  :aria-label="'清缓存 / 重试连接 ' + c.name"
+                  @click="clear(c)"
+                  :disabled="busy"
+                >
+                  <AppIcon name="refresh" :size="16" /></button
+                ><button
+                  class="icon-button danger-button"
+                  :title="
+                    c.policy_names.length ? '被策略引用，无法删除' : '删除通道'
+                  "
+                  :aria-label="'删除 ' + c.name"
                   @click="remove(c)"
                   :disabled="busy || c.policy_names.length > 0"
                 >
-                  删除
+                  <AppIcon name="trash" :size="16" />
                 </button>
               </div>
             </td>
@@ -254,7 +297,9 @@ async function remove(c: ModelChannel) {
           affected.join("、")
         }}。停用后，这些策略会改用其他可用通道。
       </p>
-      <button class="primary" :disabled="busy">保存通道</button>
+      <button class="primary" :disabled="busy">
+        <AppIcon name="save" :size="16" />保存通道
+      </button>
     </form>
   </section>
 </template>

@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
+import AppIcon from "./AppIcon.vue";
 import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
-import AnalyticsPanel from "./AnalyticsPanel.vue";
 import {
   auditError,
   auditStage,
@@ -28,6 +35,9 @@ import {
   type ModelChannel,
 } from "./api";
 
+const AnalyticsPanel = defineAsyncComponent(
+  () => import("./AnalyticsPanel.vue"),
+);
 const user = ref(""),
   initializing = ref(true),
   busy = ref(false),
@@ -36,6 +46,39 @@ const user = ref(""),
 const username = ref("admin"),
   password = ref("");
 const page = ref("policies");
+const mobileNav = ref(false);
+const navigationElement = ref<HTMLElement>();
+const menuButton = ref<HTMLButtonElement>();
+watch(mobileNav, async (open) => {
+  await nextTick();
+  if (open)
+    navigationElement.value
+      ?.querySelector<HTMLElement>("[aria-current='page']")
+      ?.focus();
+  else menuButton.value?.focus({ preventScroll: true });
+});
+function navigationKeydown(event: KeyboardEvent) {
+  if (!mobileNav.value || window.matchMedia("(min-width: 761px)").matches)
+    return;
+  if (event.key === "Escape") {
+    mobileNav.value = false;
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const elements = navigationElement.value?.querySelectorAll<HTMLElement>(
+    "a, button:not(:disabled)",
+  );
+  if (!elements?.length) return;
+  const first = elements[0],
+    last = elements[elements.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 const policies = ref<Policy[]>([]),
   selected = ref<Policy | null>(null),
   config = ref<Config | null>(null),
@@ -79,16 +122,27 @@ const logItems = ref<AuditLog[]>([]),
 const currentPassword = ref(""),
   newPassword = ref("");
 const nav = [
-  ["overview", "运行概览", "01"],
-  ["policies", "审核策略", "02"],
-  ["channels", "审核模型", "03"],
-  ["credentials", "连接密钥", "04"],
-  ["keys", "访问密钥", "05"],
-  ["logs", "审核记录", "06"],
-  ["analytics", "数据分析", "07"],
-  ["billing", "成本与预算", "08"],
-  ["settings", "系统设置", "09"],
-];
+  ["overview", "运行概览", "overview"],
+  ["analytics", "数据分析", "chart"],
+  ["logs", "审核记录", "file"],
+  ["policies", "审核策略", "shield"],
+  ["channels", "审核模型", "cpu"],
+  ["credentials", "连接密钥", "link"],
+  ["keys", "访问密钥", "key"],
+  ["billing", "成本与预算", "wallet"],
+  ["settings", "系统设置", "settings"],
+] as const;
+const pageMeta: Record<string, [string, string]> = {
+  overview: ["OVERVIEW", "过去 24 小时 · 正式请求"],
+  analytics: ["ANALYTICS", "模型用量与性能"],
+  logs: ["AUDIT LOGS", "审核请求与判定记录"],
+  policies: ["POLICIES", "当前生效的规则与模型调度"],
+  channels: ["MODEL CHANNELS", "模型连接与运行状态"],
+  credentials: ["CONNECTIONS", "上游模型访问凭证"],
+  keys: ["ACCESS KEYS", "调用方访问权限"],
+  billing: ["BILLING", "费用明细与预算"],
+  settings: ["SETTINGS", "账户安全与管理记录"],
+};
 const title = computed(
   () => nav.find((n) => n[0] === page.value)?.[1] || "审核策略",
 );
@@ -209,6 +263,7 @@ async function selectPolicy(event: Event) {
   await run(() => loadPolicy(id));
 }
 async function navigate(target: string) {
+  mobileNav.value = false;
   page.value = target;
   error.value = "";
   notice.value = "";
@@ -416,19 +471,20 @@ window.addEventListener("beforeunload", (e) => {
 </script>
 
 <template>
-  <div v-if="initializing" class="loading">正在连接审核系统…</div>
+  <div v-if="initializing" class="loading">
+    <AppIcon name="refresh" class="spinning" />正在连接审核系统…
+  </div>
   <div v-else-if="!user" class="login-shell">
-    <div class="login-story">
-      <span class="brand-mark">A</span>
-      <p class="eyebrow">AUDIT CONSOLE</p>
-      <h1>审核规则，<br />由你定义。</h1>
-      <p>管理提示词、验证审核效果，<br />让每次判定都有据可查。</p>
-      <span class="login-foot">多模型内容审核系统</span>
-    </div>
+    <a class="login-brand brand" href="#"
+      ><span class="brand-mark"><AppIcon name="shield" :size="23" /></span
+      ><span>内容审核<small>AUDIT CONSOLE</small></span></a
+    >
     <form class="login-form" @submit.prevent="login">
-      <p class="eyebrow">管理控制台</p>
-      <h2>欢迎回来</h2>
-      <p class="muted">使用部署时创建的管理员账户登录。</p>
+      <span class="login-symbol"><AppIcon name="lock" :size="26" /></span>
+      <div>
+        <h1>登录控制台</h1>
+        <p class="muted">DeepSeek 内容审核系统</p>
+      </div>
       <label
         >用户名<input
           v-model="username"
@@ -446,92 +502,124 @@ window.addEventListener("beforeunload", (e) => {
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="notice" class="success" role="status">{{ notice }}</p>
       <button class="primary" :disabled="busy">
-        {{ busy ? "正在登录…" : "登录控制台" }}
+        {{ busy ? "正在登录…" : "登录"
+        }}<AppIcon
+          :name="busy ? 'refresh' : 'next'"
+          :class="{ spinning: busy }"
+        />
       </button>
-      <p class="muted small">首次登录密码位于部署目录的 .env 文件。</p>
     </form>
+    <footer class="login-foot">AUDIT CONSOLE · 管理员访问</footer>
   </div>
   <div v-else class="app-shell">
-    <aside class="sidebar">
+    <button
+      v-if="mobileNav"
+      class="nav-backdrop"
+      aria-label="关闭导航"
+      @click="mobileNav = false"
+    />
+    <aside
+      ref="navigationElement"
+      id="workspace-navigation"
+      class="sidebar"
+      :class="{ 'is-open': mobileNav }"
+      @keydown="navigationKeydown"
+    >
       <a class="brand" href="#" @click.prevent="navigate('policies')"
-        ><span class="brand-mark">A</span
+        ><span class="brand-mark"><AppIcon name="shield" :size="23" /></span
         ><span>内容审核<small>AUDIT CONSOLE</small></span></a
       >
-      <p class="nav-caption">管理工作区</p>
-      <nav>
+      <p class="nav-caption">工作空间</p>
+      <nav aria-label="主导航">
         <button
           v-for="item in nav"
           :key="item[0]"
           :class="{ active: page === item[0] }"
+          :aria-current="page === item[0] ? 'page' : undefined"
+          :disabled="busy"
           @click="navigate(item[0])"
         >
-          <span>{{ item[2] }}</span
-          >{{ item[1] }}
+          <AppIcon :name="item[2]" />{{ item[1]
+          }}<span v-if="page === item[0]" class="nav-active-dot" />
         </button>
       </nav>
       <div class="side-bottom">
         <span class="avatar">{{ user.slice(0, 1).toUpperCase() }}</span>
         <div>{{ user }}<small>管理员</small></div>
-        <button class="logout" @click="logout" :disabled="busy">退出</button>
+        <button
+          class="icon-button logout"
+          title="退出登录"
+          aria-label="退出登录"
+          @click="logout"
+          :disabled="busy"
+        >
+          <AppIcon name="logout" />
+        </button>
       </div>
     </aside>
     <main>
       <header class="topbar">
-        <span>工作区 <span class="slash">/</span> {{ title }}</span
-        ><span class="subtle">独立审核服务</span>
+        <div class="row">
+          <button
+            ref="menuButton"
+            class="icon-button mobile-menu"
+            aria-label="打开导航"
+            :aria-expanded="mobileNav"
+            aria-controls="workspace-navigation"
+            @click="mobileNav = !mobileNav"
+          >
+            <AppIcon :name="mobileNav ? 'close' : 'menu'" /></button
+          ><span class="muted breadcrumb-root">工作空间</span
+          ><AppIcon
+            class="breadcrumb-root muted"
+            name="chevron"
+            :size="14"
+          /><span>{{ title }}</span>
+        </div>
+        <span class="workspace-label"
+          ><AppIcon name="shield" :size="14" />管理控制台</span
+        >
       </header>
       <div class="workspace">
         <div class="page-heading">
           <div>
             <p class="eyebrow">
-              {{
-                page === "policies" ? "POLICY WORKSPACE" : "AUDIT MANAGEMENT"
-              }}
+              {{ pageMeta[page]?.[0] }}
             </p>
             <h1>{{ title }}</h1>
             <p class="muted">
-              {{
-                page === "policies"
-                  ? "配置审核规则与模型调度，保存后直接生效。"
-                  : page === "overview"
-                    ? "过去 24 小时的正式审核请求。"
-                    : page === "channels"
-                      ? "管理多个审核模型通道，查看并发与连接状态。"
-                      : page === "credentials"
-                        ? "管理 DeepSeek 官方或第三方接口，以及 sub2api Grok 连接。"
-                        : page === "keys"
-                          ? "为 sub2api 和其他调用方分配独立访问凭证。"
-                          : page === "logs"
-                            ? "追踪实际模型、调用过程、评分与原因。"
-                            : page === "analytics"
-                              ? "按时间范围比较模型的 token 消耗、费用和响应速度。"
-                              : page === "billing"
-                                ? "追踪上游 token 成本，设置调用方的日预算与月预算。"
-                                : "管理账户和查看后台操作记录。"
-              }}
+              {{ pageMeta[page]?.[1] }}
             </p>
           </div>
           <button
             v-if="page === 'policies'"
+            class="primary"
             @click="creating = true"
             :disabled="busy"
           >
-            ＋ 新建策略</button
+            <AppIcon name="plus" :size="16" />新建策略</button
           ><button
             v-else-if="page !== 'billing' && page !== 'analytics'"
             @click="navigate(page)"
             :disabled="busy"
+            class="icon-button"
+            title="刷新数据"
+            aria-label="刷新数据"
           >
-            刷新
+            <AppIcon name="refresh" :class="{ spinning: busy }" />
           </button>
         </div>
         <div v-if="error" class="banner error" role="alert">
           {{ error
-          }}<button @click="error = ''" aria-label="关闭错误提示">×</button>
+          }}<button @click="error = ''" aria-label="关闭错误提示">
+            <AppIcon name="close" />
+          </button>
         </div>
         <div v-if="notice" class="banner success" role="status">
           {{ notice
-          }}<button @click="notice = ''" aria-label="关闭提示">×</button>
+          }}<button @click="notice = ''" aria-label="关闭提示">
+            <AppIcon name="close" />
+          </button>
         </div>
 
         <template v-if="page === 'policies' && selected && config">
@@ -551,8 +639,16 @@ window.addEventListener("beforeunload", (e) => {
             ><span class="badge" :class="selected.enabled ? 'green' : 'gray'">{{
               selected.enabled ? "已启用" : "已停用"
             }}</span>
-            <button @click="togglePolicy" :disabled="busy || dirty">
-              {{ selected.enabled ? "停用策略" : "启用策略" }}
+            <button
+              class="switch"
+              role="switch"
+              :aria-checked="selected.enabled"
+              :aria-label="selected.enabled ? '停用策略' : '启用策略'"
+              :title="selected.enabled ? '停用策略' : '启用策略'"
+              @click="togglePolicy"
+              :disabled="busy || dirty"
+            >
+              <span />
             </button>
           </div>
           <PolicyEditor
@@ -576,7 +672,7 @@ window.addEventListener("beforeunload", (e) => {
               @click="saveCurrent"
               :disabled="busy || !dirty"
             >
-              保存并生效
+              <AppIcon name="save" :size="16" />保存并生效
             </button>
           </footer>
         </template>
@@ -610,33 +706,57 @@ window.addEventListener("beforeunload", (e) => {
           ><div class="metric-grid">
             <section
               v-for="m in [
-                ['requests', '审核请求'],
-                ['flagged', '策略命中'],
-                ['errors', '审核失败'],
-                ['tokens', 'Token 用量'],
-              ]"
+                ['requests', '审核请求', 'activity'],
+                ['flagged', '策略命中', 'shield'],
+                ['errors', '审核失败', 'gauge'],
+                ['tokens', 'Token 用量', 'database'],
+              ] as const"
               :key="m[0]"
               class="panel metric"
             >
-              <span class="muted">{{ m[1] }}</span
+              <span class="metric-label"
+                >{{ m[1] }}<AppIcon :name="m[2]" /></span
               ><strong>{{ (overview[m[0]] || 0).toLocaleString() }}</strong
               ><small>过去 24 小时 · 正式请求</small>
             </section>
           </div>
-          <section class="panel">
-            <div class="panel-heading"><h2>延迟与策略</h2></div>
-            <div class="latency-row">
-              <span
-                >平均审核延迟
-                <strong
-                  >{{ Math.round(overview.avg_latency_ms || 0) }} ms</strong
-                ></span
-              ><span
-                >P95 审核延迟
-                <strong
-                  >{{ Math.round(overview.p95_latency_ms || 0) }} ms</strong
+          <div class="overview-health">
+            <div>
+              <AppIcon name="clock" /><span
+                >平均审核延迟<strong
+                  >{{
+                    Math.round(overview.avg_latency_ms || 0).toLocaleString()
+                  }}
+                  <small>ms</small></strong
                 ></span
               >
+            </div>
+            <div>
+              <AppIcon name="gauge" /><span
+                >P95 审核延迟<strong
+                  >{{
+                    Math.round(overview.p95_latency_ms || 0).toLocaleString()
+                  }}
+                  <small>ms</small></strong
+                ></span
+              >
+            </div>
+            <div>
+              <AppIcon name="shield" /><span
+                >启用策略<strong
+                  >{{ policies.filter((p) => p.enabled).length }}
+                  <small>/ {{ policies.length }}</small></strong
+                ></span
+              >
+            </div>
+            <button class="text-button" @click="navigate('analytics')">
+              模型数据分析<AppIcon name="next" :size="16" />
+            </button>
+          </div>
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>策略状态</h2>
+              <span class="muted small">{{ policies.length }} 个策略</span>
             </div>
             <div v-for="p in policies" :key="p.id" class="record-row">
               <div>
@@ -721,7 +841,8 @@ window.addEventListener("beforeunload", (e) => {
                     required
                     minlength="8"
                     maxlength="512" /></label
-                ><button class="primary" :disabled="busy">加密保存</button
+                ><button class="primary" :disabled="busy">
+                  <AppIcon name="lock" :size="16" />加密保存</button
                 ><button
                   v-if="credentialEditID"
                   type="button"
@@ -787,7 +908,8 @@ window.addEventListener("beforeunload", (e) => {
             <strong>新访问密钥 · 明文仅显示这一次</strong
             ><code>{{ newToken }}</code>
             <div class="row">
-              <button @click="copyToken">复制密钥</button
+              <button @click="copyToken">
+                <AppIcon name="copy" :size="16" />复制密钥</button
               ><button @click="newToken = ''">已保存，隐藏</button>
             </div>
           </section>
@@ -840,7 +962,15 @@ window.addEventListener("beforeunload", (e) => {
                   <button @click="revokeKey(k)" :disabled="busy || !k.active">
                     {{ k.active ? "停用" : "已停用" }}
                   </button>
-                  <button @click="deleteKey(k)" :disabled="busy">删除</button>
+                  <button
+                    class="icon-button danger-button"
+                    title="删除密钥"
+                    :aria-label="'删除 ' + k.name"
+                    @click="deleteKey(k)"
+                    :disabled="busy"
+                  >
+                    <AppIcon name="trash" :size="16" />
+                  </button>
                 </div>
               </div>
             </section>
@@ -898,7 +1028,9 @@ window.addEventListener("beforeunload", (e) => {
               ><label
                 >开始<input v-model="logFrom" type="datetime-local" /></label
               ><label>结束<input v-model="logTo" type="datetime-local" /></label
-              ><button :disabled="busy">筛选</button>
+              ><button :disabled="busy">
+                <AppIcon name="filters" :size="16" />筛选
+              </button>
             </form>
             <div class="table-scroll">
               <table>
@@ -982,27 +1114,32 @@ window.addEventListener("beforeunload", (e) => {
               <span>共 {{ logTotal }} 条</span>
               <div class="row">
                 <button
+                  class="icon-button"
+                  title="上一页"
+                  aria-label="上一页"
                   :disabled="busy || logPage <= 1"
                   @click="
                     logPage--;
                     run(loadLogs);
                   "
                 >
-                  上一页</button
+                  <AppIcon name="back" :size="16" /></button
                 ><span>{{ logPage }}</span
                 ><button
+                  class="icon-button"
+                  title="下一页"
+                  aria-label="下一页"
                   :disabled="busy || logPage * 20 >= logTotal"
                   @click="
                     logPage++;
                     run(loadLogs);
                   "
                 >
-                  下一页
+                  <AppIcon name="next" :size="16" />
                 </button>
               </div>
-            </div>
-          </section></template
-        >
+            </div></section
+        ></template>
 
         <template v-if="page === 'settings'"
           ><section class="panel settings-panel">
@@ -1057,7 +1194,9 @@ window.addEventListener("beforeunload", (e) => {
     >
       <div class="panel-heading">
         <h2>新建审核策略</h2>
-        <button @click="creating = false" aria-label="关闭">×</button>
+        <button @click="creating = false" aria-label="关闭">
+          <AppIcon name="close" />
+        </button>
       </div>
       <form class="stack-form" @submit.prevent="createPolicy">
         <label>策略名称<input v-model="newName" required /></label
@@ -1074,7 +1213,9 @@ window.addEventListener("beforeunload", (e) => {
               复制：{{ p.name }}
             </option>
           </select></label
-        ><button class="primary" :disabled="busy">创建策略</button>
+        ><button class="primary" :disabled="busy">
+          <AppIcon name="plus" :size="16" />创建策略
+        </button>
       </form>
     </section>
   </div>
@@ -1087,7 +1228,9 @@ window.addEventListener("beforeunload", (e) => {
     >
       <div class="panel-heading">
         <h2>审核详情</h2>
-        <button @click="detail = null" aria-label="关闭">×</button>
+        <button @click="detail = null" aria-label="关闭">
+          <AppIcon name="close" />
+        </button>
       </div>
       <dl class="detail-grid">
         <dt>请求 ID</dt>

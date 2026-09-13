@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import type { EChartsCoreOption } from "echarts/core";
+import AppIcon from "./AppIcon.vue";
+import DataChart from "./DataChart.vue";
 import { api, APIError } from "./api";
 
 interface Metrics {
@@ -37,7 +40,7 @@ interface Analytics {
 }
 const emit = defineEmits<{ unauthorized: [] }>();
 const presets = [
-  { value: "1h", label: "近 1 小时" },
+  { value: "1h", label: "1 小时" },
   { value: "24h", label: "24 小时" },
   { value: "48h", label: "48 小时" },
   { value: "7d", label: "7 天" },
@@ -45,24 +48,62 @@ const presets = [
   { value: "custom", label: "自定义" },
 ];
 const metricOptions = [
-  { value: "total_tokens", label: "Token 消耗" },
-  { value: "known_cost_cny", label: "已知费用" },
-  { value: "avg_latency_ms", label: "平均耗时" },
-  { value: "output_tokens_per_second", label: "输出速度" },
+  {
+    value: "total_tokens",
+    label: "Token 用量",
+    icon: "database",
+    color: "#3565e8",
+  },
+  {
+    value: "known_cost_cny",
+    label: "已知费用",
+    icon: "coins",
+    color: "#149d8c",
+  },
+  {
+    value: "avg_latency_ms",
+    label: "平均耗时",
+    icon: "clock",
+    color: "#c48929",
+  },
+  {
+    value: "output_tokens_per_second",
+    label: "输出速度",
+    icon: "zap",
+    color: "#b47698",
+  },
 ] as const;
 type ChartMetric = (typeof metricOptions)[number]["value"];
+type ShareMetric = "total_tokens" | "calls" | "known_cost_cny";
+const palette = [
+  "#3565e8",
+  "#24ac9a",
+  "#e4af54",
+  "#be81a1",
+  "#72b7dc",
+  "#84928c",
+];
 const range = ref("24h"),
   model = ref(""),
-  kind = ref("production"),
-  busy = ref(false),
-  error = ref("");
-const data = ref<Analytics | null>(null),
-  metric = ref<ChartMetric>("total_tokens");
+  kind = ref("production");
+const busy = ref(false),
+  error = ref(""),
+  data = ref<Analytics | null>(null);
+const availableModels = ref<string[]>([]);
+const metric = ref<ChartMetric>("total_tokens"),
+  chartType = ref<"line" | "bar">("line");
+const shareMetric = ref<ShareMetric>("total_tokens");
+const trend = ref<InstanceType<typeof DataChart>>();
 const beijingInput = (ms: number) =>
   new Date(ms + 8 * 3600000).toISOString().slice(0, 16);
 const from = ref(beijingInput(Date.now() - 86400000)),
   to = ref(beijingInput(Date.now()));
 const count = (value: number) => value.toLocaleString("zh-CN");
+const compact = (value: number) =>
+  value.toLocaleString("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
 const money = (value: string) => `¥${value}`;
 const latency = (value: number | null) =>
   value == null
@@ -71,11 +112,21 @@ const latency = (value: number | null) =>
       ? `${value.toFixed(0)} ms`
       : `${(value / 1000).toFixed(2)} s`;
 const speed = (value: number | null) =>
-  value == null ? "—" : `${value.toFixed(2)} token/s`;
+  value == null ? "—" : `${value.toFixed(2)}`;
 const time = (value: string) =>
   new Date(value).toLocaleString("zh-CN", {
     timeZone: "Asia/Shanghai",
     hour12: false,
+  });
+const bucketLabel = (value: string, short = false) =>
+  new Date(value).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    ...(!short || data.value?.interval_seconds === 86400
+      ? { month: "2-digit" as const, day: "2-digit" as const }
+      : {}),
+    ...(data.value?.interval_seconds !== 86400
+      ? { hour: "2-digit" as const, minute: "2-digit" as const, hour12: false }
+      : {}),
   });
 const interval = computed(() =>
   data.value?.interval_seconds === 60
@@ -84,6 +135,25 @@ const interval = computed(() =>
       ? "小时"
       : "天",
 );
+const currentMetric = computed(
+  () => metricOptions.find((m) => m.value === metric.value)!,
+);
+const chartValues = computed(() =>
+  (data.value?.series || []).map((p) =>
+    p[metric.value] == null ? null : Number(p[metric.value]),
+  ),
+);
+const hasSamples = computed(() => chartValues.value.some((v) => v != null));
+const formatMetric = (value: number | null) =>
+  value == null
+    ? "无耗时样本"
+    : metric.value === "avg_latency_ms"
+      ? latency(value)
+      : metric.value === "output_tokens_per_second"
+        ? `${speed(value)} token/s`
+        : metric.value === "known_cost_cny"
+          ? `¥${value.toLocaleString("zh-CN", { maximumFractionDigits: 12 })}`
+          : count(value);
 async function load() {
   if (busy.value) return;
   error.value = "";
@@ -108,8 +178,11 @@ async function load() {
     q.set("to", end.toISOString());
   }
   busy.value = true;
+  data.value = null;
   try {
-    data.value = await api<Analytics>(`/admin/analytics?${q}`);
+    const result = await api<Analytics>(`/admin/analytics?${q}`);
+    data.value = result;
+    availableModels.value = result.available_models;
   } catch (e) {
     error.value = e instanceof Error ? e.message : "分析数据加载失败";
     if (e instanceof APIError && e.status === 401) emit("unauthorized");
@@ -122,78 +195,219 @@ async function selectRange(value: string) {
   if (value !== "custom") await load();
 }
 async function selectModel(value: string) {
+  if (busy.value) return;
   model.value = value;
   await load();
 }
-const chart = computed(() => {
+const trendOption = computed<EChartsCoreOption>(() => {
   const series = data.value?.series || [];
-  const values = series.map((p) =>
-    p[metric.value] == null ? null : Number(p[metric.value]),
-  );
-  const max = Math.max(0, ...values.filter((v): v is number => v != null));
-  const ceiling = max || 1;
-  const x = (i: number) => 78 + (i * 670) / Math.max(1, series.length - 1);
-  const y = (v: number) => 190 - (v / ceiling) * 160;
-  const paths: string[] = [];
-  let path: string[] = [];
-  values.forEach((v, i) => {
-    if (v == null) {
-      if (path.length) paths.push(path.join(" "));
-      path = [];
-    } else path.push(`${x(i)},${y(v)}`);
-  });
-  if (path.length) paths.push(path.join(" "));
+  const tokens = metric.value === "total_tokens";
+  const plotSeries = tokens
+    ? [
+        {
+          name: "总 Token",
+          color: palette[0],
+          values: series.map((p) => p.total_tokens),
+        },
+        {
+          name: "输入 Token",
+          color: palette[1],
+          values: series.map((p) => p.input_tokens),
+        },
+        {
+          name: "输出 Token",
+          color: palette[2],
+          values: series.map((p) => p.output_tokens),
+        },
+      ]
+    : [
+        {
+          name: currentMetric.value.label,
+          color: currentMetric.value.color,
+          values: chartValues.value,
+        },
+      ];
   return {
-    series,
-    values,
-    ceiling,
-    x,
-    y,
-    paths,
-    ticks: [
-      ...new Set([0, Math.floor((series.length - 1) / 2), series.length - 1]),
-    ].filter((i) => i >= 0),
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      renderMode: "richText",
+      backgroundColor: "#fff",
+      borderColor: "#e7e9ef",
+      padding: 12,
+      textStyle: { color: "#4d5666", fontSize: 12 },
+      axisPointer: {
+        type: chartType.value === "bar" ? "shadow" : "line",
+        lineStyle: { color: "#b6c5e4", type: "dashed" },
+      },
+      valueFormatter: (value: number | null) => formatMetric(value),
+    },
+    legend: {
+      show: tokens,
+      top: 0,
+      left: 0,
+      icon: "circle",
+      itemWidth: 7,
+      itemHeight: 7,
+      itemGap: 22,
+      textStyle: { color: "#8590a2", fontSize: 11 },
+    },
+    grid: {
+      left: 4,
+      right: 15,
+      top: 42,
+      bottom: 56,
+      outerBoundsMode: "same",
+      outerBoundsContain: "axisLabel",
+    },
+    xAxis: {
+      type: "category",
+      data: series.map((p) => p.time),
+      boundaryGap: chartType.value === "bar",
+      axisLine: { lineStyle: { color: "#e7ecf4" } },
+      axisTick: { show: false },
+      axisPointer: {
+        label: {
+          formatter: ({ value }: { value: string }) => bucketLabel(value),
+        },
+      },
+      axisLabel: {
+        color: "#939cad",
+        fontSize: 10,
+        hideOverlap: true,
+        margin: 15,
+        formatter: (value: string) => bucketLabel(value, true),
+      },
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      splitNumber: 4,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: "#edf0f5", type: "dashed" } },
+      axisLabel: {
+        color: "#939cad",
+        fontSize: 10,
+        formatter: (v: number) =>
+          metric.value === "known_cost_cny"
+            ? `¥${v !== 0 && Math.abs(v) < 1 ? v.toLocaleString("zh-CN", { maximumSignificantDigits: 3 }) : compact(v)}`
+            : metric.value === "avg_latency_ms"
+              ? latency(v)
+              : compact(v),
+      },
+    },
+    dataZoom: [
+      {
+        type: "slider",
+        height: 18,
+        bottom: 0,
+        left: 12,
+        right: 12,
+        handleIcon: "roundRect",
+        handleSize: 16,
+        borderColor: "transparent",
+        backgroundColor: "#f6f8fc",
+        fillerColor: "#dce6fc66",
+        showDetail: false,
+        dataBackground: {
+          lineStyle: { color: "#c3d1ee" },
+          areaStyle: { color: "#e7edf9" },
+        },
+        selectedDataBackground: {
+          lineStyle: { color: "#99b4ed" },
+          areaStyle: { color: "#d5e1fb" },
+        },
+        handleStyle: { color: "#fff", borderColor: "#b5c6e9" },
+        moveHandleSize: 0,
+      },
+    ],
+    series: plotSeries.map((s) => ({
+      name: s.name,
+      type: chartType.value,
+      data: s.values,
+      smooth: 0.22,
+      smoothMonotone: "x",
+      connectNulls: false,
+      showSymbol:
+        series.length === 1 || s.values.some((value) => value == null),
+      symbol: "circle",
+      symbolSize: 6,
+      lineStyle: { width: 2.5, color: s.color },
+      itemStyle: {
+        color: s.color,
+        borderRadius: chartType.value === "bar" ? [3, 3, 0, 0] : undefined,
+      },
+      areaStyle:
+        chartType.value === "line" && (!tokens || s.name === "总 Token")
+          ? { color: s.color, opacity: 0.07 }
+          : undefined,
+      barMaxWidth: 22,
+      emphasis: { focus: "series" },
+    })),
   };
 });
-const chartValue = (v: number | null) =>
-  v == null
-    ? "无耗时样本"
-    : metric.value === "avg_latency_ms"
-      ? latency(v)
-      : metric.value === "output_tokens_per_second"
-        ? speed(v)
-        : (metric.value === "known_cost_cny" ? "¥" : "") +
-          v.toLocaleString("zh-CN", { maximumSignificantDigits: 5 });
-const bucketLabel = (value: string) =>
-  new Date(value).toLocaleString("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "2-digit",
-    day: "2-digit",
-    ...(data.value?.interval_seconds !== 86400
-      ? { hour: "2-digit" as const, minute: "2-digit" as const, hour12: false }
-      : {}),
-  });
+const shares = computed(() =>
+  (data.value?.models || [])
+    .map((m, i) => ({
+      name: m.model,
+      value: Number(m[shareMetric.value]),
+      color: palette[i % palette.length],
+    }))
+    .sort((a, b) => b.value - a.value),
+);
+const shareTotal = computed(() =>
+  shares.value.reduce((sum, row) => sum + row.value, 0),
+);
+const shareLabel = computed(
+  () =>
+    ({ total_tokens: "Token", calls: "调用", known_cost_cny: "已知费用" })[
+      shareMetric.value
+    ],
+);
+const shareOption = computed<EChartsCoreOption>(() => ({
+  tooltip: {
+    trigger: "item",
+    renderMode: "richText",
+    confine: true,
+    borderColor: "#e7e9ef",
+    textStyle: { fontSize: 12, color: "#4d5666" },
+  },
+  series: [
+    {
+      type: "pie",
+      radius: ["72%", "92%"],
+      center: ["50%", "50%"],
+      padAngle: shares.value.length > 1 ? 3 : 0,
+      label: { show: false },
+      emphasis: { scaleSize: 4 },
+      labelLine: { show: false },
+      data: shares.value.map((row) => ({
+        name: row.name,
+        value: row.value,
+        itemStyle: { color: row.color, borderRadius: 4 },
+      })),
+    },
+  ],
+}));
+const tokenShare = (row: ModelMetrics) =>
+  data.value?.summary.total_tokens
+    ? (row.total_tokens / data.value.summary.total_tokens) * 100
+    : 0;
 onMounted(load);
 </script>
 
 <template>
   <div class="analytics-panel" :aria-busy="busy">
-    <div v-if="error" class="banner error" role="alert">{{ error }}</div>
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <h2>模型数据分析</h2>
-          <p class="muted small">按模型汇总用量、费用和响应速度。</p>
-        </div>
-        <button @click="load" :disabled="busy">
-          {{ busy ? "加载中…" : "刷新数据" }}
-        </button>
-      </div>
-      <div class="analytics-presets" aria-label="统计时间范围">
+    <div class="analytics-toolbar">
+      <div
+        class="segmented range-control"
+        role="group"
+        aria-label="统计时间范围"
+      >
         <button
           v-for="p in presets"
           :key="p.value"
-          :class="{ primary: range === p.value }"
           :aria-pressed="range === p.value"
           :disabled="busy"
           @click="selectRange(p.value)"
@@ -201,190 +415,297 @@ onMounted(load);
           {{ p.label }}
         </button>
       </div>
-      <form class="analytics-filters" @submit.prevent="load">
-        <label
-          >模型<select v-model="model" :disabled="busy" @change="load">
-            <option value="">全部模型</option>
-            <option
-              v-if="model && !data?.available_models.includes(model)"
-              :value="model"
-            >
-              {{ model }}
-            </option>
-            <option
-              v-for="name in data?.available_models || []"
-              :key="name"
-              :value="name"
-            >
-              {{ name }}
-            </option>
-          </select></label
+      <div class="analytics-selectors">
+        <label class="sr-only" for="analytics-model">模型</label>
+        <select
+          id="analytics-model"
+          v-model="model"
+          :disabled="busy"
+          @change="load"
         >
-        <label
-          >来源<select v-model="kind" :disabled="busy" @change="load">
-            <option value="production">正式请求</option>
-            <option value="test">后台试跑</option>
-            <option value="all">全部</option>
-          </select></label
+          <option value="">全部模型</option>
+          <option
+            v-if="model && !availableModels.includes(model)"
+            :value="model"
+          >
+            {{ model }}
+          </option>
+          <option v-for="name in availableModels" :key="name" :value="name">
+            {{ name }}
+          </option>
+        </select>
+        <label class="sr-only" for="analytics-kind">来源</label>
+        <select
+          id="analytics-kind"
+          v-model="kind"
+          :disabled="busy"
+          @change="load"
         >
-        <template v-if="range === 'custom'"
-          ><label
-            >开始时间（北京时间）<input
-              v-model="from"
-              type="datetime-local"
-              required
-              :disabled="busy" /></label
-          ><label
-            >结束时间（北京时间）<input
-              v-model="to"
-              type="datetime-local"
-              required
-              :disabled="busy" /></label
-          ><button class="primary" :disabled="busy">应用范围</button></template
+          <option value="production">正式请求</option>
+          <option value="test">后台试跑</option>
+          <option value="all">全部来源</option>
+        </select>
+        <button
+          class="icon-button"
+          title="刷新数据"
+          aria-label="刷新数据"
+          @click="load"
+          :disabled="busy"
         >
-      </form>
-      <p v-if="data" class="muted small">
-        {{ time(data.from) }} 至 {{ time(data.to) }}（不含结束时刻） · 按{{
-          interval
-        }}展示趋势
-      </p>
-    </section>
-
-    <template v-if="data">
+          <AppIcon name="refresh" :class="{ spinning: busy }" :size="16" />
+        </button>
+      </div>
+    </div>
+    <form v-if="range === 'custom'" class="custom-range" @submit.prevent="load">
+      <label
+        >开始时间（北京时间）<input
+          v-model="from"
+          type="datetime-local"
+          required
+          :disabled="busy"
+      /></label>
+      <label
+        >结束时间（北京时间）<input
+          v-model="to"
+          type="datetime-local"
+          required
+          :disabled="busy"
+      /></label>
+      <button class="primary" :disabled="busy">应用范围</button>
+    </form>
+    <div v-if="error" class="banner error" role="alert">
+      {{ error
+      }}<button :disabled="busy" @click="load">
+        <AppIcon name="refresh" :size="15" />重试
+      </button>
+    </div>
+    <div
+      v-if="busy"
+      class="analytics-skeleton"
+      role="status"
+      aria-label="正在加载分析数据"
+    >
+      <div class="metric-grid">
+        <div v-for="i in 4" :key="i" class="skeleton-metric">
+          <span /><strong /><span />
+        </div>
+      </div>
+      <div class="skeleton-chart" />
+      <span class="sr-only">正在加载分析数据</span>
+    </div>
+    <template v-else-if="data">
+      <div class="analytics-period">
+        <span
+          ><AppIcon name="calendar" :size="13" />{{ bucketLabel(data.from) }} 至
+          {{ bucketLabel(data.to) }}</span
+        ><span>北京时间 · 结束时刻不含 · 按{{ interval }}统计</span>
+      </div>
       <div class="metric-grid analytics-metrics">
-        <section class="metric">
-          <span>模型 Token 消耗</span
-          ><strong>{{ count(data.summary.total_tokens) }}</strong
-          ><small
-            >输入 {{ count(data.summary.input_tokens) }} · 输出
-            {{ count(data.summary.output_tokens) }}</small
-          ><small v-if="data.summary.unknown_usage"
-            >另有 {{ count(data.summary.unknown_usage) }} 次调用用量未知</small
-          >
+        <button
+          v-for="m in metricOptions"
+          :key="m.value"
+          class="metric"
+          :class="{ selected: metric === m.value }"
+          :aria-pressed="metric === m.value"
+          @click="metric = m.value"
+          :style="{ '--metric-color': m.color }"
+        >
+          <span class="metric-label"
+            >{{ m.label
+            }}<span class="metric-icon"
+              ><AppIcon :name="m.icon" :size="17" /></span
+          ></span>
+          <template v-if="m.value === 'total_tokens'">
+            <strong>{{ count(data.summary.total_tokens) }}</strong>
+            <small
+              >输入 {{ compact(data.summary.input_tokens)
+              }}<span class="separator">/</span>输出
+              {{ compact(data.summary.output_tokens) }}</small
+            >
+          </template>
+          <template v-else-if="m.value === 'known_cost_cny'">
+            <strong
+              class="money-value"
+              :title="money(data.summary.known_cost_cny)"
+              >{{ money(data.summary.known_cost_cny) }}</strong
+            >
+            <small>含估算 {{ money(data.summary.estimated_cost_cny) }}</small>
+          </template>
+          <template v-else-if="m.value === 'avg_latency_ms'">
+            <strong>{{ latency(data.summary.avg_latency_ms) }}</strong>
+            <small>{{ count(data.summary.latency_samples) }} 次耗时样本</small>
+          </template>
+          <template v-else>
+            <strong
+              >{{ speed(data.summary.output_tokens_per_second) }}
+              <span
+                v-if="data.summary.output_tokens_per_second != null"
+                class="metric-unit"
+                >token/s</span
+              ></strong
+            >
+            <small>输出 Token / 对应调用总耗时</small>
+          </template>
+        </button>
+      </div>
+      <div class="analytics-context">
+        <span
+          ><i
+            class="legend-dot"
+            :style="{ background: palette[0] }"
+          />实际模型调用 <b>{{ count(data.summary.calls) }}</b> 次</span
+        >
+        <span
+          ><i
+            class="legend-dot"
+            :style="{ background: palette[1] }"
+          />本地缓存命中 <b>{{ count(data.summary.cache_hits) }}</b> 次</span
+        >
+        <span v-if="data.summary.unknown_usage" class="pending-note"
+          >用量未知 {{ count(data.summary.unknown_usage) }} 次</span
+        >
+        <span v-if="data.summary.pending_costs" class="pending-note"
+          >待核对 {{ count(data.summary.pending_costs) }} 笔</span
+        >
+      </div>
+      <div class="analytics-visuals">
+        <section class="trend-section">
+          <div class="panel-heading">
+            <div>
+              <h2>{{ currentMetric.label }}趋势</h2>
+              <p class="muted small">
+                {{ model || "全部模型" }} · 每{{ interval }}
+              </p>
+            </div>
+            <div class="row">
+              <div class="segmented" role="group" aria-label="图表类型">
+                <button
+                  class="icon-button"
+                  :aria-pressed="chartType === 'line'"
+                  aria-label="折线图"
+                  title="折线图"
+                  @click="chartType = 'line'"
+                >
+                  <AppIcon name="chart" :size="16" />
+                </button>
+                <button
+                  class="icon-button"
+                  :aria-pressed="chartType === 'bar'"
+                  aria-label="柱状图"
+                  title="柱状图"
+                  @click="chartType = 'bar'"
+                >
+                  <AppIcon name="bars" :size="16" />
+                </button>
+              </div>
+              <button
+                class="icon-button"
+                aria-label="下载趋势图"
+                title="下载趋势图"
+                :disabled="!data.summary.records || !hasSamples"
+                @click="trend?.download('模型' + currentMetric.label + '趋势')"
+              >
+                <AppIcon name="download" :size="16" />
+              </button>
+            </div>
+          </div>
+          <div v-if="!data.summary.records" class="chart-empty">
+            <AppIcon name="chart" :size="32" /><strong>暂无调用数据</strong
+            ><span>所选范围没有模型调用或费用记录</span>
+          </div>
+          <div v-else-if="!hasSamples" class="chart-empty">
+            <AppIcon name="clock" :size="32" /><strong>暂无耗时样本</strong
+            ><span>所选范围没有可用的速度或耗时数据</span>
+          </div>
+          <div v-else class="trend-chart">
+            <DataChart
+              ref="trend"
+              :option="trendOption"
+              :label="
+                currentMetric.label +
+                '趋势，按' +
+                interval +
+                '统计，数据见下方时间明细'
+              "
+            />
+          </div>
         </section>
-        <section class="metric">
-          <span>已知费用（含估算）</span
-          ><strong>{{ money(data.summary.known_cost_cny) }}</strong
-          ><small>其中估算 {{ money(data.summary.estimated_cost_cny) }}</small
-          ><small v-if="data.summary.pending_costs"
-            >另有
-            {{ count(data.summary.pending_costs) }} 笔待核对，未计入金额</small
-          >
-        </section>
-        <section class="metric">
-          <span>平均调用耗时</span
-          ><strong>{{ latency(data.summary.avg_latency_ms) }}</strong
-          ><small
-            >{{ count(data.summary.latency_samples) }} 次耗时样本 ·
-            不含本地缓存</small
-          >
-        </section>
-        <section class="metric">
-          <span>平均输出速度</span
-          ><strong>{{ speed(data.summary.output_tokens_per_second) }}</strong
-          ><small>输出 token ÷ 对应调用总耗时</small>
+        <section class="distribution-section">
+          <div class="panel-heading">
+            <h2>模型占比</h2>
+            <label class="sr-only" for="share-metric">占比指标</label
+            ><select id="share-metric" v-model="shareMetric">
+              <option value="total_tokens">Token 用量</option>
+              <option value="calls">调用次数</option>
+              <option value="known_cost_cny">已知费用</option>
+            </select>
+          </div>
+          <div v-if="!shareTotal" class="chart-empty">
+            <AppIcon name="cpu" :size="32" /><strong
+              >暂无{{ shareLabel }}数据</strong
+            >
+          </div>
+          <template v-else>
+            <div class="donut-chart">
+              <DataChart
+                :option="shareOption"
+                :label="shareLabel + '模型占比，数据见下方模型列表'"
+                @select="selectModel"
+              />
+              <div class="donut-center">
+                <strong>{{ shares.filter((s) => s.value > 0).length }}</strong
+                ><span>活跃模型</span>
+              </div>
+            </div>
+            <div class="share-legend">
+              <button
+                v-for="row in shares"
+                :key="row.name"
+                :disabled="busy"
+                @click="selectModel(row.name)"
+                :title="row.name"
+              >
+                <i
+                  class="legend-dot"
+                  :style="{ background: row.color }"
+                /><span>{{ row.name }}</span
+                ><strong
+                  >{{ ((row.value / shareTotal) * 100).toFixed(1) }}%</strong
+                >
+              </button>
+            </div>
+          </template>
         </section>
       </div>
-      <p class="muted small">
-        实际模型调用 {{ count(data.summary.calls) }} 次 · 本地缓存命中
-        {{ count(data.summary.cache_hits) }}
-        次。重试分别计入对应模型；同名模型跨通道合计。
-      </p>
-
-      <section class="panel">
-        <div class="panel-heading">
-          <h2>用量趋势</h2>
-          <div class="row">
-            <button
-              v-for="m in metricOptions"
-              :key="m.value"
-              :class="{ primary: metric === m.value }"
-              :aria-pressed="metric === m.value"
-              @click="metric = m.value"
-            >
-              {{ m.label }}
-            </button>
-          </div>
-        </div>
-        <div v-if="!data.summary.records" class="empty">
-          所选范围没有模型调用或费用记录。
-        </div>
-        <div
-          v-else-if="chart.values.every((value) => value == null)"
-          class="empty"
-        >
-          所选范围暂无可用的速度或耗时样本。
-        </div>
-        <div v-else class="analytics-chart">
-          <svg
-            viewBox="0 0 780 235"
-            role="img"
-            :aria-label="`${metricOptions.find((m) => m.value === metric)?.label}，按${interval}统计`"
-          >
-            <g v-for="ratio in [0, 0.5, 1]" :key="ratio">
-              <line
-                x1="78"
-                x2="748"
-                :y1="chart.y(ratio * chart.ceiling)"
-                :y2="chart.y(ratio * chart.ceiling)"
-                class="chart-grid"
-              />
-              <text
-                x="68"
-                :y="chart.y(ratio * chart.ceiling) + 4"
-                text-anchor="end"
-              >
-                {{ chartValue(ratio * chart.ceiling) }}
-              </text>
-            </g>
-            <polyline
-              v-for="(path, i) in chart.paths"
-              :key="i"
-              :points="path"
-              class="chart-line"
-            />
-            <template v-for="(point, i) in chart.series" :key="point.time">
-              <circle
-                v-if="chart.values[i] != null"
-                :cx="chart.x(i)"
-                :cy="chart.y(chart.values[i]!)"
-                r="3"
-                class="chart-point"
-              >
-                <title>
-                  {{ time(point.time) }} · {{ chartValue(chart.values[i]) }} ·
-                  {{ point.calls }} 次调用
-                </title>
-              </circle>
-            </template>
-            <text
-              v-for="i in chart.ticks"
-              :key="i"
-              :x="chart.x(i)"
-              y="218"
-              :text-anchor="
-                i === 0
-                  ? 'start'
-                  : i === chart.series.length - 1
-                    ? 'end'
-                    : 'middle'
-              "
-            >
-              {{ bucketLabel(chart.series[i].time) }}
-            </text>
-          </svg>
-        </div>
-        <p class="hint">
-          耗时含失败调用，速度按整次调用耗时计算（含请求准备与响应等待），不是首字延迟或纯生成速度。缺少耗时的历史记录不计入速度平均值；未知用量和待核对费用不按
-          0 估算。
+      <details class="analytics-method">
+        <summary>
+          <AppIcon name="help" :size="14" />统计口径<AppIcon
+            name="down"
+            :size="13"
+          />
+        </summary>
+        <p>
+          重试分别计入对应模型，同名模型跨通道合计。本地缓存不重复计入模型 Token
+          与耗时。已知费用包含估算，待核对金额未计入；未知用量不按零估算。
         </p>
-      </section>
-
-      <section class="panel">
+        <p>
+          平均耗时包含失败调用；速度按输出 Token
+          总数除以对应调用总耗时计算，包含准备与响应等待。缺少耗时的历史记录不参与平均值，样本数见模型明细。
+        </p>
+      </details>
+      <section class="panel model-comparison">
         <div class="panel-heading">
-          <h2>模型对比</h2>
-          <button v-if="model" :disabled="busy" @click="selectModel('')">
-            查看全部模型
+          <div class="row">
+            <h2>模型对比</h2>
+            <span class="badge gray">{{ data.models.length }} 个模型</span>
+          </div>
+          <button
+            v-if="model"
+            class="text-button"
+            :disabled="busy"
+            @click="selectModel('')"
+          >
+            <AppIcon name="back" :size="15" />全部模型
           </button>
         </div>
         <div class="table-scroll">
@@ -393,21 +714,28 @@ onMounted(load);
               <tr>
                 <th>模型</th>
                 <th>调用 / 缓存</th>
-                <th>Token 消耗</th>
+                <th>Token 用量</th>
                 <th>已知费用</th>
                 <th>平均耗时</th>
                 <th>输出速度</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in data.models" :key="row.model">
+              <tr v-for="(row, i) in data.models" :key="row.model">
                 <td>
                   <button
-                    class="text-button"
+                    class="text-button model-name"
                     :disabled="busy"
                     @click="selectModel(row.model)"
                   >
-                    {{ row.model }}
+                    <span
+                      class="model-symbol"
+                      :style="{
+                        color: palette[i % palette.length],
+                        background: palette[i % palette.length] + '10',
+                      }"
+                      ><AppIcon name="cpu" :size="16" /></span
+                    >{{ row.model }}<AppIcon name="chevron" :size="13" />
                   </button>
                 </td>
                 <td>
@@ -415,36 +743,56 @@ onMounted(load);
                   }}<small>缓存 {{ count(row.cache_hits) }}</small>
                 </td>
                 <td>
-                  {{ count(row.total_tokens)
-                  }}<small
+                  <div class="token-cell">
+                    <strong>{{ count(row.total_tokens) }}</strong
+                    ><span>{{ tokenShare(row).toFixed(1) }}%</span>
+                  </div>
+                  <div class="token-track">
+                    <span
+                      :style="{
+                        width: tokenShare(row) + '%',
+                        background: palette[i % palette.length],
+                      }"
+                    />
+                  </div>
+                  <small
                     >输入 {{ count(row.input_tokens) }} / 输出
                     {{ count(row.output_tokens) }}</small
-                  ><small v-if="row.unknown_usage"
+                  ><small v-if="row.unknown_usage" class="pending-note"
                     >{{ row.unknown_usage }} 次用量未知</small
                   >
                 </td>
                 <td>
                   {{ money(row.known_cost_cny)
-                  }}<small v-if="row.pending_costs"
+                  }}<small v-if="row.pending_costs" class="pending-note"
                     >{{ row.pending_costs }} 笔待核对</small
-                  ><small v-if="row.estimated_cost_cny !== '0'"
+                  ><small v-if="Number(row.estimated_cost_cny) !== 0"
                     >含估算 {{ money(row.estimated_cost_cny) }}</small
                   >
                 </td>
                 <td>
                   {{ latency(row.avg_latency_ms)
-                  }}<small>{{ row.latency_samples }} 次样本</small>
+                  }}<small>{{ count(row.latency_samples) }} 次样本</small>
                 </td>
-                <td>{{ speed(row.output_tokens_per_second) }}</td>
+                <td>
+                  {{ speed(row.output_tokens_per_second)
+                  }}<small v-if="row.output_tokens_per_second != null"
+                    >token/s</small
+                  >
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p v-if="!data.models.length" class="empty">没有符合条件的模型记录。</p>
+        <p v-if="!data.models.length" class="empty">没有符合条件的模型记录</p>
       </section>
-
-      <details v-if="data.summary.records" class="panel">
-        <summary>查看每{{ interval }}明细</summary>
+      <details v-if="data.summary.records" class="time-details">
+        <summary>
+          <span><AppIcon name="calendar" :size="16" />每{{ interval }}明细</span
+          ><span class="muted"
+            >{{ data.series.length }} 个时间段<AppIcon name="down" :size="14"
+          /></span>
+        </summary>
         <div class="table-scroll">
           <table>
             <thead>
@@ -454,12 +802,13 @@ onMounted(load);
                 <th>Token</th>
                 <th>已知费用</th>
                 <th>平均耗时</th>
+                <th>输出速度</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="p in data.series" :key="p.time">
-                <td>{{ bucketLabel(p.time) }}</td>
-                <td>{{ p.calls }}</td>
+                <td :title="time(p.time)">{{ bucketLabel(p.time) }}</td>
+                <td>{{ count(p.calls) }}</td>
                 <td>
                   {{ count(p.total_tokens)
                   }}<small v-if="p.unknown_usage"
@@ -473,6 +822,10 @@ onMounted(load);
                   >
                 </td>
                 <td>{{ latency(p.avg_latency_ms) }}</td>
+                <td>
+                  {{ speed(p.output_tokens_per_second)
+                  }}{{ p.output_tokens_per_second == null ? "" : " token/s" }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -483,73 +836,474 @@ onMounted(load);
 </template>
 
 <style scoped>
-.analytics-panel {
-  display: grid;
-  gap: 20px;
-}
-.analytics-panel > .panel {
-  margin-bottom: 0;
-}
-.analytics-panel .panel-heading {
-  flex-wrap: wrap;
-}
-.analytics-panel > .panel > .muted,
-.analytics-panel > .panel > .hint {
-  margin: 16px 24px;
-}
-.analytics-presets {
+.analytics-toolbar {
   display: flex;
+  justify-content: space-between;
+  gap: 14px;
   flex-wrap: wrap;
+}
+.analytics-selectors {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin: 20px 24px;
 }
-.analytics-filters {
+.analytics-selectors select {
+  font-size: 12px;
+  width: 145px;
+  padding: 8px 10px;
+  height: 36px;
+}
+.analytics-selectors select:nth-of-type(2) {
+  width: 108px;
+}
+.custom-range {
   display: flex;
-  flex-wrap: wrap;
   gap: 16px;
+  flex-wrap: wrap;
   align-items: end;
-  margin: 0 24px 16px;
+  margin-top: 18px;
 }
-.analytics-filters label {
-  min-width: 180px;
+.custom-range label {
   flex: 1;
+  min-width: 210px;
 }
-.analytics-metrics {
-  margin: 0;
+.analytics-period {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 20px 0 14px;
+  font-size: 10px;
+  color: #939cac;
+}
+.analytics-period > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.analytics-panel > .banner {
+  margin-top: 20px;
+}
+.analytics-metrics .metric {
+  text-align: left;
+  align-items: stretch;
+  gap: 11px;
+  position: relative;
+  transition:
+    border-color 0.18s,
+    background 0.18s;
+}
+.analytics-metrics .metric:hover {
+  background: #fafbff;
+}
+.analytics-metrics .metric.selected {
+  border-color: #b8caf7;
+  background: #fcfdff;
+  box-shadow: 0 2px 8px #3565e807;
+}
+.analytics-metrics .metric.selected::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 20px;
+  right: 20px;
+  height: 2px;
+  background: var(--metric-color);
+}
+.metric-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--metric-color) 8%, white);
+  color: var(--metric-color);
+}
+.metric-icon .app-icon {
+  color: inherit;
 }
 .analytics-metrics strong {
-  font-size: clamp(20px, 2vw, 30px);
+  color: #293244;
+  font-weight: 550;
+}
+.analytics-metrics small {
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.analytics-chart {
-  width: 100%;
-  overflow-x: auto;
+.metric-unit {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8d96a5;
+  white-space: nowrap;
 }
-.analytics-chart svg {
-  display: block;
-  width: 100%;
-  min-width: 540px;
+.money-value {
+  font-size: 25px;
 }
-.analytics-chart text {
-  fill: currentColor;
+.separator {
+  margin: 0 7px;
+  color: #c1c8d4;
+}
+.analytics-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  padding: 18px 0 23px;
+  color: #8a94a5;
+  font-size: 11px;
+}
+.analytics-context > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.analytics-context b {
+  font-weight: 500;
+  color: #5d6b80;
+}
+.legend-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pending-note {
+  color: #b38131;
+}
+.analytics-visuals {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(235px, 1fr);
+  border-top: 1px solid var(--border);
+}
+.trend-section {
+  min-width: 0;
+  padding-right: 28px;
+}
+.distribution-section {
+  min-width: 0;
+  padding-left: 28px;
+  border-left: 1px solid var(--border);
+}
+.trend-section .panel-heading {
+  min-height: 87px;
+}
+.distribution-section select {
+  width: auto;
+  max-width: 118px;
+  padding: 6px 8px;
+  font-size: 11px;
+  border-color: transparent;
+  background: #f7f8fb;
+}
+.trend-chart,
+.chart-empty {
+  height: 280px;
+}
+.chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #98a6bd;
+  font-size: 11px;
+  text-align: center;
+}
+.chart-empty strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: #78879f;
+}
+.chart-empty > .app-icon {
+  margin-bottom: 3px;
+  color: #b2bfd5;
+}
+.donut-chart {
+  width: 158px;
+  height: 158px;
+  position: relative;
+  margin: 0 auto 12px;
+}
+.donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.donut-center strong {
+  font-size: 29px;
+  font-weight: 550;
+  color: #3f4c64;
+}
+.donut-center span {
   font-size: 10px;
-  opacity: 0.7;
+  color: #8e98a8;
 }
-.chart-grid {
-  stroke: currentColor;
-  opacity: 0.12;
+.share-legend {
+  display: grid;
+  gap: 4px;
+  max-height: 125px;
+  overflow-y: auto;
+  padding-bottom: 9px;
 }
-.chart-line {
-  fill: none;
-  stroke: #3e6d51;
-  stroke-width: 2.5;
+.share-legend button {
+  display: flex;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  padding: 4px 2px;
+  min-height: 27px;
+  gap: 8px;
+  font-size: 11px;
 }
-.chart-point {
-  fill: #3e6d51;
+.share-legend button > span {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8590a2;
 }
-summary {
+.share-legend strong {
+  font-size: 11px;
+  font-weight: 500;
+  color: #5b6980;
+}
+.analytics-method {
+  color: #8a94a6;
+  font-size: 11px;
+  margin: 18px 0 22px;
+}
+.analytics-method summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
-  font-weight: 600;
-  padding: 20px 24px;
+}
+.analytics-method p {
+  margin: 10px 0 0;
+  max-width: 900px;
+  line-height: 1.8;
+}
+.analytics-method summary::-webkit-details-marker,
+.time-details summary::-webkit-details-marker {
+  display: none;
+}
+.model-comparison {
+  margin-bottom: 18px;
+}
+.model-name {
+  color: #4e5e7b;
+  gap: 9px;
+  font-weight: 500;
+}
+.model-name > .app-icon {
+  color: #a8b3c5;
+}
+.model-symbol {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+}
+.token-cell {
+  min-width: 130px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.token-cell > span {
+  color: #9ca6b7;
+  font-size: 10px;
+}
+.token-track {
+  height: 3px;
+  width: 100%;
+  background: #edf1f8;
+  margin-top: 7px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.token-track span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+.time-details {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.time-details summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 17px 0;
+  cursor: pointer;
+  font-size: 12px;
+}
+.time-details summary > span {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+.time-details summary > .muted {
+  font-size: 11px;
+}
+.analytics-skeleton {
+  margin-top: 26px;
+}
+.skeleton-metric {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: grid;
+  gap: 16px;
+}
+.skeleton-metric span,
+.skeleton-metric strong,
+.skeleton-chart {
+  display: block;
+  background: #f2f4f8;
+  border-radius: 4px;
+  animation: pulse 1.2s ease-in-out infinite alternate;
+}
+.skeleton-metric span {
+  height: 12px;
+  width: 65%;
+}
+.skeleton-metric strong {
+  height: 30px;
+  width: 80%;
+}
+.skeleton-chart {
+  height: 300px;
+  margin-top: 35px;
+}
+@keyframes pulse {
+  to {
+    opacity: 0.45;
+  }
+}
+@media (max-width: 1200px) {
+  .trend-section {
+    padding-right: 20px;
+  }
+  .distribution-section {
+    padding-left: 20px;
+  }
+  .range-control button {
+    padding-inline: 10px;
+  }
+}
+@media (max-width: 1000px) {
+  .analytics-visuals {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trend-section {
+    padding-right: 0;
+  }
+  .distribution-section {
+    padding-left: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: 170px minmax(0, 1fr);
+    gap: 0 25px;
+    align-items: center;
+  }
+  .distribution-section .panel-heading {
+    grid-column: 1 / -1;
+  }
+  .distribution-section .chart-empty {
+    grid-column: 1 / -1;
+    height: 190px;
+  }
+  .share-legend {
+    max-height: 150px;
+  }
+  .donut-chart {
+    margin-bottom: 0;
+  }
+}
+@media (max-width: 760px) {
+  .analytics-toolbar {
+    gap: 12px;
+  }
+  .range-control {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .range-control button {
+    padding-inline: 8px;
+    font-size: 11px;
+  }
+  .analytics-selectors {
+    width: 100%;
+  }
+  .analytics-selectors select {
+    width: 0;
+    flex: 1;
+  }
+  .analytics-selectors select:nth-of-type(2) {
+    flex: 0 0 107px;
+  }
+  .analytics-metrics .metric {
+    gap: 10px;
+  }
+  .analytics-metrics strong {
+    font-size: 23px;
+  }
+  .analytics-metrics .money-value {
+    font-size: 20px;
+  }
+  .metric-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .metric-unit {
+    font-size: 10px;
+  }
+  .analytics-context {
+    gap: 9px 15px;
+    padding-bottom: 20px;
+  }
+  .trend-chart {
+    height: 260px;
+  }
+  .trend-section .panel-heading {
+    gap: 8px;
+  }
+  .trend-section .panel-heading > .row {
+    gap: 5px;
+  }
+  .distribution-section {
+    gap: 0 12px;
+    grid-template-columns: 145px minmax(0, 1fr);
+  }
+  .donut-chart {
+    width: 140px;
+    height: 140px;
+  }
+  .custom-range {
+    gap: 12px;
+  }
+  .custom-range label {
+    min-width: 100%;
+  }
+}
+@media (max-width: 370px) {
+  .range-control button {
+    padding-inline: 5px;
+  }
+  .analytics-metrics strong {
+    font-size: 20px;
+  }
 }
 </style>

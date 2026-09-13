@@ -7,13 +7,17 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "format": "prettier --write src index.html vite.config.ts tsconfig.json package.json",
-    "format:check": "prettier --check src index.html vite.config.ts tsconfig.json package.json"
+    "test:ui": "playwright test",
+    "format": "prettier --write src tests index.html vite.config.ts playwright.config.ts tsconfig.json package.json",
+    "format:check": "prettier --check src tests index.html vite.config.ts playwright.config.ts tsconfig.json package.json"
   },
   "dependencies": {
+    "@lucide/vue": "1.45.0",
+    "echarts": "6.1.0",
     "vue": "3.5.13"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@vitejs/plugin-vue": "5.2.3",
     "prettier": "3.6.2",
     "typescript": "5.6.3",

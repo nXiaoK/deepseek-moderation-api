@@ -1,0 +1,89 @@
+<script setup lang="ts">
+import {
+  Activity,
+  ArrowDownToLine,
+  ArrowLeft,
+  ArrowRight,
+  BarChart3,
+  CalendarDays,
+  ChartNoAxesCombined,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  Clock3,
+  Coins,
+  Copy,
+  Cpu,
+  Database,
+  FileText,
+  Gauge,
+  KeyRound,
+  LayoutDashboard,
+  Link,
+  LockKeyhole,
+  LogOut,
+  Menu,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash2,
+  Wallet,
+  X,
+  Zap,
+} from "@lucide/vue";
+const icons = {
+  activity: Activity,
+  download: ArrowDownToLine,
+  back: ArrowLeft,
+  next: ArrowRight,
+  bars: BarChart3,
+  calendar: CalendarDays,
+  chart: ChartNoAxesCombined,
+  check: Check,
+  down: ChevronDown,
+  chevron: ChevronRight,
+  help: CircleHelp,
+  clock: Clock3,
+  coins: Coins,
+  copy: Copy,
+  cpu: Cpu,
+  database: Database,
+  file: FileText,
+  gauge: Gauge,
+  key: KeyRound,
+  overview: LayoutDashboard,
+  link: Link,
+  lock: LockKeyhole,
+  logout: LogOut,
+  menu: Menu,
+  edit: Pencil,
+  play: Play,
+  plus: Plus,
+  refresh: RefreshCw,
+  save: Save,
+  settings: Settings2,
+  shield: ShieldCheck,
+  filters: SlidersHorizontal,
+  trash: Trash2,
+  wallet: Wallet,
+  close: X,
+  zap: Zap,
+};
+defineProps<{ name: keyof typeof icons; size?: number }>();
+</script>
+
+<template>
+  <component
+    :is="icons[name]"
+    :size="size || 18"
+    :stroke-width="1.7"
+    aria-hidden="true"
+    class="app-icon"
+  />
+</template>

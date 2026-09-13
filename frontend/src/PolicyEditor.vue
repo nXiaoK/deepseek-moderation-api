@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import AppIcon from "./AppIcon.vue";
 import {
   api,
   type Config,
@@ -157,7 +158,9 @@ async function test() {
           数字越小越优先；同级按权重分流，同层不可用时切换到下一级。
         </p>
       </div>
-      <button @click="emit('models')">管理审核模型</button>
+      <button @click="emit('models')">
+        <AppIcon name="cpu" :size="16" />管理审核模型
+      </button>
     </div>
     <div class="row">
       <label
@@ -167,7 +170,9 @@ async function test() {
             {{ c.name }} · {{ c.model }}
           </option>
         </select></label
-      ><button @click="add" :disabled="busy || !addID">添加</button>
+      ><button @click="add" :disabled="busy || !addID">
+        <AppIcon name="plus" :size="16" />添加
+      </button>
     </div>
     <div v-if="!config.channels.length" class="empty">
       尚未绑定模型通道。先在“审核模型”添加通道，再加入此策略。
@@ -230,8 +235,16 @@ async function test() {
               }}
             </td>
             <td>
-              <button @click="config.channels.splice(i, 1)" :disabled="busy">
-                移除
+              <button
+                class="icon-button danger-button"
+                title="移除通道"
+                :aria-label="
+                  '移除 ' + (channel(b.channel_id)?.name || b.channel_id)
+                "
+                @click="config.channels.splice(i, 1)"
+                :disabled="busy"
+              >
+                <AppIcon name="trash" :size="16" />
               </button>
             </td>
           </tr>
@@ -300,7 +313,11 @@ async function test() {
       @click="test"
       :disabled="testing || busy || !input.trim()"
     >
-      {{ testing ? "正在审核…" : "运行审核" }}
+      <AppIcon
+        :name="testing ? 'refresh' : 'play'"
+        :class="{ spinning: testing }"
+        :size="16"
+      />{{ testing ? "正在审核…" : "运行审核" }}
     </button>
     <p class="hint">
       试跑不使用正式结果缓存，不触发 sub2api 封禁或通知。指定通道时只调用一次。

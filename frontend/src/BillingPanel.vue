@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import AppIcon from "./AppIcon.vue";
 import {
   api,
   APIError,
@@ -229,8 +230,14 @@ onMounted(refresh);
         @click="tab = item[0]"
       >
         {{ item[1] }}</button
-      ><button class="billing-refresh" @click="refresh" :disabled="busy">
-        刷新
+      ><button
+        class="billing-refresh icon-button"
+        title="刷新账单"
+        aria-label="刷新账单"
+        @click="refresh"
+        :disabled="busy"
+      >
+        <AppIcon name="refresh" :size="16" :class="{ spinning: busy }" />
       </button>
     </div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -238,17 +245,19 @@ onMounted(refresh);
     <template v-if="tab === 'costs'">
       <div v-if="summary" class="metric-grid billing-metrics">
         <section class="panel metric">
-          <span class="muted">按用量计算 / 已核对</span
+          <span class="metric-label"
+            >按用量计算 / 已核对<AppIcon name="coins" /></span
           ><strong>{{ yuan(summary.calculated_cny) }}</strong
           ><small>不等同于供应商实扣账单</small>
         </section>
         <section class="panel metric">
-          <span class="muted">保守估算费用</span
+          <span class="metric-label">保守估算费用<AppIcon name="clock" /></span
           ><strong>{{ yuan(summary.estimated_cny) }}</strong
           ><small>缺少缓存拆分或跨计费时段</small>
         </section>
         <section class="panel metric">
-          <span class="muted">预留 / 待核对</span
+          <span class="metric-label"
+            >预留 / 待核对<AppIcon name="wallet" /></span
           ><strong>{{ yuan(summary.reserved_cny) }}</strong
           ><small>{{ summary.pending_count }} 笔，继续占用预算</small>
         </section>
@@ -307,7 +316,9 @@ onMounted(refresh);
                 {{ label }}
               </option>
             </select></label
-          ><button :disabled="busy">筛选</button>
+          ><button :disabled="busy">
+            <AppIcon name="filters" :size="16" />筛选
+          </button>
         </form>
         <div class="table-scroll">
           <table>
@@ -401,22 +412,28 @@ onMounted(refresh);
           <span>共 {{ total }} 条</span>
           <div class="row">
             <button
+              class="icon-button"
+              title="上一页"
+              aria-label="上一页"
               :disabled="busy || page <= 1"
               @click="
                 page--;
                 run(loadCosts);
               "
             >
-              上一页</button
+              <AppIcon name="back" :size="16" /></button
             ><span>{{ page }}</span
             ><button
+              class="icon-button"
+              title="下一页"
+              aria-label="下一页"
               :disabled="busy || page * 20 >= total"
               @click="
                 page++;
                 run(loadCosts);
               "
             >
-              下一页
+              <AppIcon name="next" :size="16" />
             </button>
           </div>
         </div>
@@ -445,6 +462,23 @@ onMounted(refresh);
             >月预算占用 {{ usagePercent(b)!.toFixed(1) }}%</span
           >
         </div>
+        <div
+          v-if="usagePercent(b) !== null"
+          class="budget-progress"
+          role="progressbar"
+          :aria-label="b.name + ' 月预算占用'"
+          :aria-valuenow="usagePercent(b)!"
+          :aria-valuemin="0"
+          :aria-valuemax="100"
+        >
+          <span
+            :style="{
+              width: usagePercent(b) + '%',
+              background:
+                usagePercent(b)! >= 80 ? 'var(--amber)' : 'var(--teal)',
+            }"
+          />
+        </div>
         <div class="form-grid">
           <label
             >每日预算（元）<input
@@ -470,7 +504,7 @@ onMounted(refresh);
         </div>
         <div class="budget-actions">
           <button class="primary" @click="saveBudget(b)" :disabled="busy">
-            保存预算
+            <AppIcon name="save" :size="16" />保存预算
           </button>
         </div>
       </section>
@@ -488,7 +522,9 @@ onMounted(refresh);
           人民币 / 每百万 tokens。高峰：周一至周五
           09:00–12:00、14:00–18:00（北京时间）。
         </p>
-        <button @click="editPrice()">添加模型单价</button>
+        <button class="primary" @click="editPrice()">
+          <AppIcon name="plus" :size="16" />添加模型单价
+        </button>
       </div>
       <section v-for="p in prices" :key="p.id" class="panel">
         <div class="panel-heading">
@@ -496,7 +532,9 @@ onMounted(refresh);
             <h2>{{ p.model }}</h2>
             <p class="muted small">生效时间 · {{ time(p.effective_at) }}</p>
           </div>
-          <button @click="editPrice(p)">更新价格</button>
+          <button @click="editPrice(p)">
+            <AppIcon name="edit" :size="16" />更新价格
+          </button>
         </div>
         <div class="table-scroll">
           <table>
@@ -536,7 +574,9 @@ onMounted(refresh);
       >
         <div class="panel-heading">
           <h2>计价依据</h2>
-          <button @click="costDetail = null" aria-label="关闭">×</button>
+          <button @click="costDetail = null" aria-label="关闭">
+            <AppIcon name="close" />
+          </button>
         </div>
         <div class="stack-form">
           <p class="hint">{{ costDetail.cost.note }}</p>
@@ -594,7 +634,9 @@ onMounted(refresh);
       >
         <div class="panel-heading">
           <h2>设置模型单价</h2>
-          <button @click="priceForm = null" aria-label="关闭">×</button>
+          <button @click="priceForm = null" aria-label="关闭">
+            <AppIcon name="close" />
+          </button>
         </div>
         <form class="stack-form" @submit.prevent="savePrice">
           <label
@@ -628,7 +670,9 @@ onMounted(refresh);
               maxlength="500"
           /></label>
           <p class="muted small">以上均为每百万 tokens 的人民币单价。</p>
-          <button class="primary" :disabled="busy">保存单价</button>
+          <button class="primary" :disabled="busy">
+            <AppIcon name="save" :size="16" />保存单价
+          </button>
           <p v-if="error" class="error">{{ error }}</p>
         </form>
       </section>
@@ -646,7 +690,9 @@ onMounted(refresh);
       >
         <div class="panel-heading">
           <h2>核对上游费用</h2>
-          <button @click="reconciliation = null" aria-label="关闭">×</button>
+          <button @click="reconciliation = null" aria-label="关闭">
+            <AppIcon name="close" />
+          </button>
         </div>
         <form class="stack-form" @submit.prevent="reconcile">
           <p class="hint">{{ reconciliation.cost.note }}</p>
@@ -664,7 +710,9 @@ onMounted(refresh);
               maxlength="500"
               placeholder="例如：供应商账单记录或未扣费确认"
             ></textarea></label
-          ><button class="primary" :disabled="busy">保存核对结果</button>
+          ><button class="primary" :disabled="busy">
+            <AppIcon name="check" :size="16" />保存核对结果
+          </button>
           <p class="muted small">原状态、原金额、操作者和依据都会留存。</p>
           <p v-if="error" class="error">{{ error }}</p>
         </form>
@@ -679,6 +727,7 @@ onMounted(refresh);
 }
 .billing-metrics {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 24px;
 }
 .billing-metrics strong {
   font-size: 25px;
@@ -688,7 +737,8 @@ onMounted(refresh);
   display: flex;
   justify-content: space-between;
   gap: 20px;
-  padding: 20px;
+  padding: 20px 0;
+  margin: 24px 0 0;
   flex-wrap: wrap;
 }
 .token-summary div {
@@ -701,7 +751,18 @@ onMounted(refresh);
   font-weight: 500;
 }
 .budget-actions {
-  padding: 0 24px 24px;
+  padding: 0 0 20px;
+}
+.budget-progress {
+  height: 5px;
+  background: #eef1f6;
+  overflow: hidden;
+  border-radius: 3px;
+}
+.budget-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
 }
 .price-heading {
   justify-content: space-between;
@@ -711,7 +772,7 @@ onMounted(refresh);
   margin: 0;
 }
 .price-source {
-  padding: 18px 22px;
+  padding: 18px 0;
   overflow-wrap: anywhere;
   margin: 0;
 }
