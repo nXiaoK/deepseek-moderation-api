@@ -55,9 +55,15 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelCalls := 0
+	var modelInput string
 	modelOutput := `{"confidence":0.9,"reason":"测试命中"}`
 	app.Engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		modelCalls++
+		input, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		modelInput = string(input)
 		raw, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": modelOutput}}}})
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
 	})}
@@ -73,12 +79,13 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 		{"cancelled", valid, "", "authentication", 401, true},
 		{"rate_limited", valid, limited, "rate_limit", 429, false},
 		{"bad_json", `{`, key, "request_validation", 400, false},
-		{"oversized", strings.Repeat("x", 1024*1024+1), key, "request_validation", 413, false},
+		{"oversized", `{"model":"abuse-audit-v1","input":"` + strings.Repeat("x", 1024*1024+1) + `"}`, key, "request_validation", 413, false},
 		{"unknown_policy", `{"model":"missing","input":"test"}`, key, "policy_check", 404, false},
 		{"forbidden", valid, forbidden, "policy_check", 403, false},
 		{"image", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "input_validation", 400, false},
 		{"empty", `{"model":"abuse-audit-v1","input":""}`, key, "input_validation", 400, false},
 		{"success", valid, key, "completed", 200, false},
+		{"image_fallback", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image` + strings.Repeat("a", 1024*1024) + `"}}]}`, key, "completed", 200, false},
 		{"model_failure", valid, key, "audit", 502, false},
 		{"input_storage_off", `{"model":"abuse-audit-v1","input":[{"type":"text","text":"inspect screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,private-image"}}]}`, key, "input_validation", 400, false},
 		{"disabled_policy", valid, key, "policy_check", 503, false},
@@ -157,6 +164,14 @@ func TestModerationRequestRecordsIncludeRejections(t *testing.T) {
 			}
 			if tt.name == "image" && log.ErrorCode != "unsupported_input" {
 				t.Fatal("image rejection is not explained")
+			}
+			if tt.name == "image_fallback" {
+				if !log.Request.TextOnlyFallback || log.Request.ImageCount != 1 || log.Input != "inspect screenshot" || log.Confidence == nil || !log.Flagged || modelCalls != before+1 || w.Header().Get("X-Audit-Input-Scope") != "text-only" {
+					t.Fatalf("fallback lost verdict or scope: %+v", log)
+				}
+				if !strings.Contains(modelInput, "inspect screenshot") || strings.Contains(modelInput, "private-image") || strings.Contains(modelInput, "data:image") {
+					t.Fatal("model did not receive only the extracted text")
+				}
 			}
 			if tt.name == "input_storage_off" {
 				var cipher []byte

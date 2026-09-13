@@ -114,6 +114,7 @@ export interface AuditLog {
     input_type?: string;
     text_chars: number;
     image_count: number;
+    text_only_fallback?: boolean;
   };
   error_message?: string;
   channel_id: string;

@@ -445,12 +445,9 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return problem(429, "rate_limited", "调用额度已达上限")
 	}
-	var in struct {
-		Model string          `json:"model"`
-		Input json.RawMessage `json:"input"`
-	}
 	a.log.Request.Stage = "request_validation"
-	if err = readJSON(w, r, &in); err != nil {
+	in, textOnlyFallback, err := readModerationRequest(w, r)
+	if err != nil {
 		return err
 	}
 	a.log.Request.Model = storedModelOutput(in.Model)
@@ -466,14 +463,18 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 	a.log.PolicyID, a.log.Threshold = p.ID, p.Config.Threshold
 	a.log.InputStored, a.days = p.Config.StoreInput, p.Config.RetentionDays
 	a.log.Request.Stage = "input_validation"
-	if a.log.Request.ImageCount > 0 {
+	if a.log.Request.ImageCount > 0 && !textOnlyFallback {
 		return problem(400, "unsupported_input", "当前策略只支持文本审核，请求包含图片，尚未调用审核模型")
 	}
-	text, err := parseText(in.Input)
+	text, err := parseModerationText(in.Input, textOnlyFallback)
 	if err != nil {
 		return err
 	}
 	a.input = text
+	a.log.Request.TextOnlyFallback = textOnlyFallback
+	if textOnlyFallback {
+		w.Header().Set("X-Audit-Input-Scope", "text-only")
+	}
 	a.log.Request.Stage = "policy_check"
 	p, channels, err := s.Store.RouteSnapshot(r.Context(), p.ID, nil)
 	if err != nil {

@@ -13,14 +13,15 @@ import (
 
 // Request metadata deliberately excludes credentials, image URLs and raw bodies.
 type AuditRequest struct {
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	Model      string `json:"model,omitempty"`
-	Stage      string `json:"stage"`
-	HTTPStatus int    `json:"http_status"`
-	InputType  string `json:"input_type,omitempty"`
-	TextChars  int    `json:"text_chars"`
-	ImageCount int    `json:"image_count"`
+	Method           string `json:"method"`
+	Path             string `json:"path"`
+	Model            string `json:"model,omitempty"`
+	Stage            string `json:"stage"`
+	HTTPStatus       int    `json:"http_status"`
+	InputType        string `json:"input_type,omitempty"`
+	TextChars        int    `json:"text_chars"`
+	ImageCount       int    `json:"image_count"`
+	TextOnlyFallback bool   `json:"text_only_fallback,omitempty"`
 }
 
 type requestAuditKey struct{}

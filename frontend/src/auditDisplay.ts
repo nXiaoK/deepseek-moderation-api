@@ -3,7 +3,7 @@ import type { AuditLog } from "./api";
 const errors: Record<string, string> = {
   invalid_api_key: "调用密钥无效或已撤销",
   rate_limited: "调用方请求限流",
-  body_too_large: "请求体超过 1 MiB",
+  body_too_large: "请求体超过大小上限",
   invalid_json: "请求 JSON 或字段不符合接口要求",
   invalid_input: "输入格式不受支持，仅支持文本审核",
   unsupported_input: "当前策略只支持文本审核",
@@ -66,7 +66,8 @@ export function auditInput(log: AuditLog): string {
         unsupported: "不支持的输入类型",
       } as Record<string, string>
     )[request.input_type] || request.input_type;
-  return `${label} · ${request.text_chars} 字 · ${request.image_count} 张图片`;
+  const scope = request.text_only_fallback ? " · 图片已跳过，仅审核文本" : "";
+  return `${label} · ${request.text_chars} 字 · ${request.image_count} 张图片${scope}`;
 }
 export function auditError(code: string, message?: string): string {
   return message || errors[code] || code;

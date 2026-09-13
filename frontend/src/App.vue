@@ -1143,6 +1143,9 @@ window.addEventListener("beforeunload", (e) => {
         <p v-else class="hint">此请求没有保存模型返回内容。</p>
       </template>
       <h3>审核输入</h3>
+      <p v-if="detail.request?.text_only_fallback" class="hint">
+        请求体超过 1 MiB，图片已跳过，仅审核文本。审核结果不覆盖图片内容。
+      </p>
       <p v-if="detail.request?.image_count" class="hint">
         请求包含
         {{
