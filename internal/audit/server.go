@@ -577,6 +577,10 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	name := filepath.Clean("/" + r.URL.Path)
 	full := filepath.Join(s.StaticDir, name)
 	if info, err := os.Stat(full); err == nil && !info.IsDir() {
+		w.Header().Set("Cache-Control", "no-cache")
+		if immutableAsset.MatchString(name) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		http.ServeFile(w, r, full)
 		return
 	}
@@ -585,8 +589,11 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Build the admin frontend first: cd frontend && pnpm build", 503)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, index)
 }
+
+var immutableAsset = regexp.MustCompile(`^/assets/[^/]+-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2?|png|jpe?g|webp|svg|avif)$`)
 
 var secretPattern = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]+|dsa_[a-z0-9_-]+|bearer\s+[^\s]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b\d{11,}\b)`)
 
