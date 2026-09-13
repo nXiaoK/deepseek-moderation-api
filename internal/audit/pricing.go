@@ -32,11 +32,12 @@ type PriceRates struct {
 	PeakOutput int64 `json:"peak_output"`
 }
 type PriceCard struct {
-	ID          int64      `json:"id"`
-	Model       string     `json:"model"`
-	Rates       PriceRates `json:"rates"`
-	Source      string     `json:"source"`
-	EffectiveAt time.Time  `json:"effective_at"`
+	CredentialID string     `json:"credential_id,omitempty"`
+	ID           int64      `json:"id"`
+	Model        string     `json:"model"`
+	Rates        PriceRates `json:"rates"`
+	Source       string     `json:"source"`
+	EffectiveAt  time.Time  `json:"effective_at"`
 }
 type CostView struct {
 	Status      string  `json:"status"`

@@ -59,3 +59,6 @@ ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS base_url TEXT NOT NULL
 ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'deepseek';
 
 CREATE INDEX IF NOT EXISTS audit_costs_request ON audit_costs(request_id);
+ALTER TABLE model_prices ADD COLUMN IF NOT EXISTS credential_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE model_prices ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+CREATE INDEX IF NOT EXISTS model_prices_connection ON model_prices(model,credential_id,effective_at DESC,id DESC);

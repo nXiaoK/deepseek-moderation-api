@@ -491,6 +491,65 @@ test("audit log search sends request and channel filters", async ({ page }) => {
   expect(query.get("page")).toBe("1");
 });
 
+test("connection-specific model prices can be saved and reset", async ({
+  page,
+}) => {
+  let saved: Record<string, unknown> | undefined;
+  await page.route("**/admin/billing/prices", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    saved = route.request().postDataJSON();
+    await route.fulfill({
+      json: [
+        {
+          id: 3,
+          model: "custom-model",
+          credential_id: "credential-1",
+          rates: {
+            off_hit: 0,
+            off_miss: 0,
+            off_output: 0,
+            peak_hit: 0,
+            peak_miss: 0,
+            peak_output: 0,
+          },
+          source: "test tariff",
+          effective_at: "2026-09-13T00:00:00Z",
+        },
+      ],
+    });
+  });
+  let reset = false;
+  await page.route("**/admin/billing/prices/3", (route) => {
+    reset = route.request().method() === "DELETE";
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/");
+  await navigate(page, "成本与预算");
+  await page.getByRole("tab", { name: "模型单价" }).click();
+  await page.getByRole("button", { name: "添加模型单价" }).click();
+  await page
+    .getByRole("combobox", { name: "计价范围", exact: true })
+    .selectOption("credential-1");
+  await page.getByLabel("模型名称", { exact: true }).fill("custom-model");
+  await page
+    .getByLabel("价格来源 / 变更依据", { exact: true })
+    .fill("test tariff");
+  await page.getByRole("button", { name: "保存单价", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(saved?.credential_id).toBe("credential-1");
+  await expect(
+    page.getByRole("heading", { name: "custom-model", exact: true }),
+  ).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "恢复模型默认价格", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "custom-model", exact: true }),
+  ).toHaveCount(0);
+  expect(reset).toBe(true);
+});
+
 test("login screen fits mobile and desktop", async ({ page }, testInfo) => {
   await page.route("**/admin/session", (route) =>
     route.fulfill({ status: 401, json: { error: { message: "请先登录" } } }),

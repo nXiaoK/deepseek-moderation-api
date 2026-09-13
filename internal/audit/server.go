@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/actions", s.actions)
 	admin("GET /admin/billing/prices", s.prices)
 	admin("POST /admin/billing/prices", s.savePrice)
+	admin("DELETE /admin/billing/prices/{id}", s.resetConnectionPrice)
 	admin("GET /admin/billing/costs", s.costs)
 	admin("POST /admin/billing/costs/{id}/reconcile", s.reconcileCost)
 	admin("GET /admin/billing/budgets", s.budgets)

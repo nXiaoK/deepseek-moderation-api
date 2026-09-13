@@ -715,6 +715,7 @@ window.addEventListener("beforeunload", (e) => {
         <BillingPanel
           v-if="page === 'billing'"
           :clients="keys"
+          :credentials="credentials"
           @unauthorized="
             user = '';
             setCSRF('');

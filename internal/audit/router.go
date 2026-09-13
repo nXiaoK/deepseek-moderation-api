@@ -442,7 +442,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			return Assessment{}, problem(400, "invalid_channel", err.Error())
 		}
 		if budget {
-			card, e := s.Store.Price(ctx, c.Model, time.Now())
+			card, e := s.Store.ConnectionPrice(ctx, c.Model, c.CredentialID, time.Now())
 			if e != nil {
 				return Assessment{}, e
 			}

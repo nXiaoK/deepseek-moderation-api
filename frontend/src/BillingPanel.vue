@@ -5,12 +5,17 @@ import {
   api,
   APIError,
   type ClientKey,
+  type Credential,
   type CostView,
   type Usage,
 } from "./api";
-const props = defineProps<{ clients: ClientKey[] }>();
+const props = defineProps<{
+  clients: ClientKey[];
+  credentials: Credential[];
+}>();
 const emit = defineEmits<{ unauthorized: [] }>();
 interface Price {
+  credential_id?: string;
   id: number;
   model: string;
   rates: Record<string, number>;
@@ -66,6 +71,7 @@ const kind = ref(""),
   status = ref(""),
   days = ref("30");
 const priceForm = ref<{
+  credential_id: string;
   model: string;
   rates_cny: Record<string, string>;
   source: string;
@@ -183,6 +189,7 @@ function editPrice(p?: Price) {
         ? String(p.rates[`${period}_${key}`] / 1e6)
         : "0";
   priceForm.value = {
+    credential_id: p?.credential_id || "",
     model: p?.model || "",
     rates_cny: rates,
     source: p?.source || "",
@@ -209,6 +216,23 @@ async function reconcile() {
     await loadCosts();
     budgets.value = await api("/admin/billing/budgets");
     notice.value = "费用核对已记录，预算占用已更新。";
+  });
+}
+const priceScope = (p: Price) =>
+  p.credential_id
+    ? props.credentials.find((c) => c.id === p.credential_id)?.name ||
+      "已删除连接"
+    : "模型默认";
+async function resetPrice(p: Price) {
+  if (
+    !window.confirm(
+      `取消“${priceScope(p)}”的 ${p.model} 价格覆盖？后续请求使用模型默认价格，已有账单不变。`,
+    )
+  )
+    return;
+  await run(async () => {
+    prices.value = await api(`/admin/billing/prices/${p.id}`, "DELETE");
+    notice.value = "连接价格覆盖已取消。";
   });
 }
 onMounted(refresh);
@@ -264,7 +288,7 @@ onMounted(refresh);
       </div>
       <section v-if="summary" class="panel token-summary">
         <div>
-          <span class="muted">DeepSeek 缓存命中输入</span
+          <span class="muted">缓存命中输入</span
           ><strong
             >{{ summary.cache_hit_tokens.toLocaleString() }} tokens</strong
           >
@@ -343,6 +367,13 @@ onMounted(refresh);
                 </td>
                 <td>
                   {{ clientName(row.client_id) }}<small>{{ row.model }}</small>
+                  <small
+                    v-if="
+                      row.usage.actual_model &&
+                      row.usage.actual_model !== row.model
+                    "
+                    >实际模型 {{ row.usage.actual_model }}</small
+                  >
                 </td>
                 <td>
                   <span
@@ -530,11 +561,23 @@ onMounted(refresh);
         <div class="panel-heading">
           <div>
             <h2>{{ p.model }}</h2>
+            <span class="badge gray">{{ priceScope(p) }}</span>
             <p class="muted small">生效时间 · {{ time(p.effective_at) }}</p>
           </div>
-          <button @click="editPrice(p)">
-            <AppIcon name="edit" :size="16" />更新价格
-          </button>
+          <div class="row">
+            <button
+              v-if="p.credential_id"
+              class="icon-button"
+              title="恢复模型默认价格"
+              aria-label="恢复模型默认价格"
+              @click="resetPrice(p)"
+              :disabled="busy"
+            >
+              <AppIcon name="refresh" :size="16" /></button
+            ><button @click="editPrice(p)">
+              <AppIcon name="edit" :size="16" />更新价格
+            </button>
+          </div>
         </div>
         <div class="table-scroll">
           <table>
@@ -595,6 +638,7 @@ onMounted(refresh);
           </p>
           <template v-if="costDetail.price_snapshot">
             <strong>请求时价格快照 #{{ costDetail.price_snapshot.id }}</strong>
+            <small>计价范围：{{ priceScope(costDetail.price_snapshot) }}</small>
             <table>
               <thead>
                 <tr>
@@ -639,6 +683,17 @@ onMounted(refresh);
           </button>
         </div>
         <form class="stack-form" @submit.prevent="savePrice">
+          <label
+            >计价范围<select
+              v-model="priceForm.credential_id"
+              :disabled="!!priceForm.expected_price_id"
+            >
+              <option value="">模型默认</option>
+              <option v-for="c in credentials" :key="c.id" :value="c.id">
+                {{ c.name }}
+              </option>
+            </select></label
+          >
           <label
             >模型名称<input
               v-model="priceForm.model"

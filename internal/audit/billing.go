@@ -56,9 +56,12 @@ func moneyPtr(v sql.NullInt64) *string {
 	return &s
 }
 func (s *Store) Price(ctx context.Context, model string, at time.Time) (*PriceCard, error) {
+	return s.ConnectionPrice(ctx, model, "", at)
+}
+func (s *Store) ConnectionPrice(ctx context.Context, model, credential string, at time.Time) (*PriceCard, error) {
 	var c PriceCard
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, "SELECT id,model,rates,source,effective_at FROM model_prices WHERE model=$1 AND effective_at<=$2 ORDER BY effective_at DESC,id DESC LIMIT 1", canonicalPriceModel(model), at).Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt)
+	err := s.DB.QueryRowContext(ctx, `SELECT id,model,rates,source,effective_at,credential_id FROM (SELECT DISTINCT ON(credential_id) * FROM model_prices WHERE model=$1 AND credential_id IN ('',$3) AND effective_at<=$2 ORDER BY credential_id,effective_at DESC,id DESC) latest WHERE active ORDER BY (credential_id<>'') DESC LIMIT 1`, canonicalPriceModel(model), at, credential).Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt, &c.CredentialID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -71,7 +74,7 @@ func (s *Store) Price(ctx context.Context, model string, at time.Time) (*PriceCa
 	return &c, c.Rates.Validate()
 }
 func (s *Store) Prices(ctx context.Context) ([]PriceCard, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT DISTINCT ON(model) id,model,rates,source,effective_at FROM model_prices WHERE effective_at<=NOW() ORDER BY model,effective_at DESC,id DESC")
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,model,rates,source,effective_at,credential_id FROM (SELECT DISTINCT ON(model,credential_id) * FROM model_prices WHERE effective_at<=$1 ORDER BY model,credential_id,effective_at DESC,id DESC) latest WHERE active ORDER BY model,credential_id`, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +83,7 @@ func (s *Store) Prices(ctx context.Context) ([]PriceCard, error) {
 	for rows.Next() {
 		var c PriceCard
 		var raw []byte
-		if err = rows.Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt); err != nil {
+		if err = rows.Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt, &c.CredentialID); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(raw, &c.Rates); err != nil {
@@ -95,7 +98,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 	if len(route) == 2 {
 		requestID, channelID = route[0], route[1]
 	}
-	card, err := s.Price(ctx, cfg.Model, at)
+	card, err := s.ConnectionPrice(ctx, cfg.Model, cfg.CredentialID, at)
 	if err != nil {
 		return nil, err
 	}
@@ -351,10 +354,11 @@ func (s *Server) prices(w http.ResponseWriter, r *http.Request) error {
 }
 func (s *Server) savePrice(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Model      string            `json:"model"`
-		Rates      map[string]string `json:"rates_cny"`
-		Source     string            `json:"source"`
-		ExpectedID int64             `json:"expected_price_id"`
+		Model        string            `json:"model"`
+		Rates        map[string]string `json:"rates_cny"`
+		Source       string            `json:"source"`
+		ExpectedID   int64             `json:"expected_price_id"`
+		CredentialID string            `json:"credential_id"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -388,14 +392,26 @@ func (s *Server) savePrice(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		var current int64
-		err := tx.QueryRowContext(r.Context(), "SELECT id FROM model_prices WHERE model=$1 AND effective_at<=NOW() ORDER BY effective_at DESC,id DESC LIMIT 1", in.Model).Scan(&current)
+		if in.CredentialID != "" {
+			var found string
+			if err := tx.QueryRowContext(r.Context(), "SELECT id FROM provider_credentials WHERE id=$1", in.CredentialID).Scan(&found); errors.Is(err, sql.ErrNoRows) {
+				return problem(400, "credential_required", "请选择有效的计价连接")
+			} else if err != nil {
+				return err
+			}
+		}
+		var active bool
+		err := tx.QueryRowContext(r.Context(), "SELECT id,active FROM model_prices WHERE model=$1 AND credential_id=$2 AND effective_at<=$3 ORDER BY effective_at DESC,id DESC LIMIT 1", in.Model, in.CredentialID, time.Now()).Scan(&current, &active)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if !active {
+			current = 0
 		}
 		if current != in.ExpectedID {
 			return ErrConflict
 		}
-		_, err = tx.ExecContext(r.Context(), "INSERT INTO model_prices(model,rates,source,author) VALUES($1,$2,$3,$4)", in.Model, string(raw), in.Source, actor(r))
+		_, err = tx.ExecContext(r.Context(), "INSERT INTO model_prices(model,rates,source,author,credential_id,effective_at) VALUES($1,$2,$3,$4,$5,$6)", in.Model, string(raw), in.Source, actor(r), in.CredentialID, time.Now())
 		return err
 	})
 	if err != nil {

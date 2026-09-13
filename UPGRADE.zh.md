@@ -2,7 +2,7 @@
 
 源码仓库：https://github.com/nXiaoK/deepseek-moderation-api ，使用 `main` 分支。以下用于更新已经运行的实例，不要重新执行首次部署的初始化步骤。
 
-本次更新补全审核请求的入口记录：鉴权失败、限流、格式错误、图片拒绝和模型失败也会出现在审核记录中，并显示 HTTP 状态、处理阶段和具体原因。更新不需要修改数据库表结构；沿用现有数据库、策略、调用方密钥和管理员账户。历史漏记的请求无法补回。
+当前优化版本沿用现有数据库、策略、调用方密钥和管理员账户，启动时执行新增字段与索引迁移。连接级价格覆盖启用后，不能直接回退到不识别计价范围的旧二进制或镜像，否则旧版可能选错价格。回退目标必须支持当前计价范围；跨此兼容边界回退需要在维护窗口恢复更新前备份，并先导出保留更新后的新增审核与费用记录。不要为普通重启或同版本更新恢复数据库。
 
 ## 更新前保留
 
@@ -50,7 +50,7 @@ bash deploy/package-1panel.sh audit-records-v1
 docker compose --env-file .env -p deepseek-audit -f compose.yaml up -d --no-deps --force-recreate app
 ```
 
-不要更改原 Compose 项目名。如果出现问题，把 `image` 改回保留的旧标签，再重新部署；不要恢复或重建数据库来回退本次应用更新。
+不要更改原 Compose 项目名。如果出现问题，仅可切回兼容当前数据库及计价范围的旧标签。是否需要备份恢复按本页开头的兼容边界判断，不要重建数据库卷。
 
 ## B. Docker Compose 从源码构建
 
@@ -105,7 +105,7 @@ sudo systemctl restart deepseek-audit
 sudo systemctl status deepseek-audit --no-pager
 ```
 
-记录 `readlink` 输出的旧目录以便回退。继续使用 `/etc/deepseek-audit.env`，不要重新运行 `init-native-env.sh` 或替换生产主密钥。若服务启动失败，将 `current` 链接恢复到原目录，再重启服务。
+记录 `readlink` 输出的旧目录以便回退。继续使用 `/etc/deepseek-audit.env`，不要重新运行 `init-native-env.sh` 或替换生产主密钥。若服务启动失败，确认旧目录兼容当前数据库和计价范围后再恢复 `current` 链接。
 
 ## 更新后验证
 
