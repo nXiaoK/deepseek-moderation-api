@@ -31,7 +31,7 @@ func parseLogFilter(q url.Values) (LogFilter, error) {
 	if f.Kind != "" && f.Kind != "production" && f.Kind != "test" {
 		return f, problem(400, "invalid_filter", "请求来源无效")
 	}
-	if f.Result != "" && f.Result != "flagged" && f.Result != "allow" && f.Result != "error" {
+	if f.Result != "" && f.Result != "flagged" && f.Result != "allow" && f.Result != "error" && f.Result != "keyword_ignored" {
 		return f, problem(400, "invalid_filter", "结果筛选无效")
 	}
 	var start, end time.Time
@@ -76,6 +76,8 @@ func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) error {
 		decision, confidence, amount, costStatus := "未知", "", "", ""
 		if row.ErrorCode != "" {
 			decision = "失败"
+		} else if row.KeywordIgnored {
+			decision = "关键词忽略"
 		} else if row.Confidence != nil {
 			decision = "放行"
 			if row.Flagged {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import AppIcon from "./AppIcon.vue";
 import {
   api,
@@ -11,6 +11,21 @@ import {
 } from "./api";
 import AttemptList from "./AttemptList.vue";
 const config = defineModel<Config>({ required: true });
+const keywordText = ref((config.value.ignore_keywords || []).join("\n"));
+watch(config, (value) => {
+  keywordText.value = (value.ignore_keywords || []).join("\n");
+});
+function updateKeywords(event: Event) {
+  keywordText.value = (event.target as HTMLTextAreaElement).value;
+  config.value.ignore_keywords = [
+    ...new Set(
+      keywordText.value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
 const name = defineModel<string>("name", { required: true });
 const props = defineProps<{
   policy: Policy;
@@ -193,6 +208,24 @@ async function test() {
         ></label
       >
     </div>
+    <label class="check-row">
+      <input
+        v-model="config.keyword_ignore_enabled"
+        type="checkbox"
+        :disabled="busy"
+      />
+      <span>关键词忽略</span>
+    </label>
+    <label v-if="config.keyword_ignore_enabled">
+      忽略关键词或短语（每行一条，区分大小写）
+      <textarea
+        :value="keywordText"
+        rows="5"
+        :disabled="busy"
+        maxlength="16100"
+        @input="updateKeywords"
+      />
+    </label>
     <label
       >审核提示词<textarea
         v-model="config.prompt"
@@ -505,10 +538,19 @@ async function test() {
       <span
         class="badge"
         :class="result.results[0].flagged ? 'red' : 'green'"
-        >{{ result.results[0].flagged ? "命中策略" : "未命中" }}</span
+        >{{
+          result.results[0].audit.keyword_ignored
+            ? "关键词忽略 · 未命中"
+            : result.results[0].flagged
+              ? "命中策略"
+              : "未命中"
+        }}</span
       >
       <div class="score">
-        {{ result.results[0].audit.confidence.toFixed(2)
+        {{
+          result.results[0].audit.keyword_ignored
+            ? "—"
+            : result.results[0].audit.confidence.toFixed(2)
         }}<span>模型评分 · 阈值 {{ result.results[0].audit.threshold }}</span>
       </div>
       <p>{{ result.results[0].audit.reason }}</p>

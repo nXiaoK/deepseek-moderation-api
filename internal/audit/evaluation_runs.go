@@ -37,23 +37,24 @@ type evaluationPlan struct {
 	MaxCost     int64              `json:"max_cost"`
 }
 type EvaluationResult struct {
-	Sequence     int       `json:"sequence"`
-	SampleID     string    `json:"sample_id"`
-	SampleName   string    `json:"sample_name"`
-	Target       string    `json:"target"`
-	Iteration    int       `json:"iteration"`
-	Expected     string    `json:"expected"`
-	Status       string    `json:"status"`
-	RequestID    string    `json:"request_id"`
-	Model        string    `json:"model"`
-	Confidence   *float64  `json:"confidence"`
-	Flagged      bool      `json:"flagged"`
-	Threshold    float64   `json:"threshold"`
-	Reason       string    `json:"reason"`
-	ErrorCode    string    `json:"error_code"`
-	ErrorMessage string    `json:"error_message"`
-	LatencyMS    int64     `json:"latency_ms"`
-	Cost         *CostView `json:"cost,omitempty"`
+	KeywordIgnored bool      `json:"keyword_ignored,omitempty"`
+	Sequence       int       `json:"sequence"`
+	SampleID       string    `json:"sample_id"`
+	SampleName     string    `json:"sample_name"`
+	Target         string    `json:"target"`
+	Iteration      int       `json:"iteration"`
+	Expected       string    `json:"expected"`
+	Status         string    `json:"status"`
+	RequestID      string    `json:"request_id"`
+	Model          string    `json:"model"`
+	Confidence     *float64  `json:"confidence"`
+	Flagged        bool      `json:"flagged"`
+	Threshold      float64   `json:"threshold"`
+	Reason         string    `json:"reason"`
+	ErrorCode      string    `json:"error_code"`
+	ErrorMessage   string    `json:"error_message"`
+	LatencyMS      int64     `json:"latency_ms"`
+	Cost           *CostView `json:"cost,omitempty"`
 }
 
 func (s *Server) evaluationRuns(w http.ResponseWriter, r *http.Request) error {
@@ -145,8 +146,10 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 			return problem(400, "invalid_evaluation", "评测通道不能重复")
 		}
 		seen[target] = true
-		if _, err := s.estimateEvaluationTrial(r.Context(), plan, target, plan.Samples[0].Input); err != nil {
-			return err
+		for _, sample := range plan.Samples {
+			if _, err := s.estimateEvaluationTrial(r.Context(), plan, target, sample.Input); err != nil {
+				return err
+			}
 		}
 	}
 	id := randomToken("eval_")
@@ -206,6 +209,15 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 	return writeJSON(w, 201, map[string]string{"id": id})
 }
 func (s *Server) estimateEvaluationTrial(ctx context.Context, plan evaluationPlan, target, input string) (int64, error) {
+	if err := plan.Policy.Config.Validate(); err != nil {
+		return 0, problem(400, "invalid_config", err.Error())
+	}
+	if target != "" && !slices.ContainsFunc(plan.Policy.Config.Channels, func(b ChannelBinding) bool { return b.Enabled && b.ChannelID == target }) {
+		return 0, problem(400, "invalid_channel", "请选择策略中已启用的通道")
+	}
+	if plan.Policy.Config.ignoresKeywords(input) {
+		return 0, nil
+	}
 	values := []int64{}
 	for _, binding := range plan.Policy.Config.Channels {
 		if !binding.Enabled || target != "" && binding.ChannelID != target {
@@ -368,6 +380,10 @@ func (s *Server) executeEvaluation(ctx context.Context, id, username string, pla
 				} else if len(response.Results) == 1 {
 					verdict := response.Results[0]
 					result.Confidence = &verdict.Audit.Confidence
+					result.KeywordIgnored = verdict.Audit.KeywordIgnored
+					if result.KeywordIgnored {
+						result.Confidence = nil
+					}
 					result.Flagged = verdict.Flagged
 					result.Reason = verdict.Audit.Reason
 				}

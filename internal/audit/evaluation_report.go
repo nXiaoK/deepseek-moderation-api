@@ -61,7 +61,7 @@ func (s *Store) evaluationResults(ctx context.Context, id string) ([]EvaluationR
 	}
 	for i := range items {
 		if items[i].RequestID != "" {
-			items[i].Cost = costs[items[i].RequestID]
+			items[i].Cost = keywordIgnoreCost(costs[items[i].RequestID], items[i].KeywordIgnored)
 		}
 	}
 	return items, nil
@@ -97,7 +97,7 @@ func evaluationScores(results []EvaluationResult) ([]EvaluationScore, error) {
 		}
 		group.score.Processed++
 		group.latency += result.LatencyMS
-		if result.Status != "completed" || result.Confidence == nil {
+		if result.Status != "completed" || result.Confidence == nil && !result.KeywordIgnored {
 			group.score.Errors++
 			continue
 		}
@@ -216,7 +216,11 @@ func (s *Server) exportEvaluation(w http.ResponseWriter, r *http.Request) error 
 				cost = *row.Cost.AmountCNY
 			}
 		}
-		cells := []string{row.SampleName, targets[row.Target], strconv.Itoa(row.Iteration), row.Expected, row.Status, flagged, confidence, strconv.FormatFloat(row.Threshold, 'g', -1, 64), strconv.FormatInt(row.LatencyMS, 10), cost, row.RequestID, row.ErrorCode}
+		status := row.Status
+		if row.KeywordIgnored && row.Status == "completed" {
+			status, flagged = "关键词忽略", "false"
+		}
+		cells := []string{row.SampleName, targets[row.Target], strconv.Itoa(row.Iteration), row.Expected, status, flagged, confidence, strconv.FormatFloat(row.Threshold, 'g', -1, 64), strconv.FormatInt(row.LatencyMS, 10), cost, row.RequestID, row.ErrorCode}
 		for i := range cells {
 			cells[i] = csvCell(cells[i])
 		}

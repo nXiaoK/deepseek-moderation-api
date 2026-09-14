@@ -369,6 +369,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 		s.notePersistenceFailure(id, "cost_summary")
 		err = problem(503, "cost_record_unavailable", "费用汇总暂时不可用")
 	}
+	cost = keywordIgnoreCost(cost, log.KeywordIgnored)
 	response.Cost = cost
 	response.LatencyMS = time.Since(start).Milliseconds()
 	response.AttemptCount = log.AttemptCount
@@ -383,6 +384,14 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 	if err == nil {
 		verdict = moderationResult(p, result)
 		log.Confidence = &result.Confidence
+		if log.KeywordIgnored {
+			// Bypass is an explicit allow even when the configured threshold is zero.
+			verdict.Flagged = false
+			verdict.Categories["illicit"] = false
+			verdict.Scores["illicit"] = 0
+			verdict.Audit.KeywordIgnored = true
+			log.Confidence = nil
+		}
 		log.Flagged = verdict.Flagged
 		log.Reason = verdict.Audit.Reason
 	} else {
@@ -443,6 +452,24 @@ func errorCode(err error) string {
 	return "internal_error"
 }
 func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelChannel, client, kind, input, onlyChannel string, response *Response, log *AuditLog, images ...AuditImage) (Assessment, error) {
+	if err := p.Config.Validate(); err != nil {
+		return Assessment{}, problem(400, "invalid_config", err.Error())
+	}
+	if onlyChannel != "" {
+		valid := false
+		for _, binding := range p.Config.Channels {
+			valid = valid || binding.ChannelID == onlyChannel && binding.Enabled
+		}
+		if !valid {
+			return Assessment{}, problem(400, "invalid_channel", "请选择策略中已启用的通道")
+		}
+	}
+	if p.Config.ignoresKeywords(input) {
+		log.KeywordIgnored = true
+		log.ModelOutputStored = false
+		response.InputScope = "keyword_ignored"
+		return Assessment{Reason: "关键词忽略，未调用模型"}, nil
+	}
 	if kind == "test" {
 		select {
 		case s.trialSlots <- struct{}{}:
@@ -450,9 +477,6 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		default:
 			return Assessment{}, problem(503, "trial_capacity_exceeded", "后台试跑并发已满，请稍后重试")
 		}
-	}
-	if err := p.Config.Validate(); err != nil {
-		return Assessment{}, problem(400, "invalid_config", err.Error())
 	}
 	budget := false
 	var err error
@@ -465,12 +489,6 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 	bindings := map[string]ChannelBinding{}
 	for _, b := range p.Config.Channels {
 		bindings[b.ChannelID] = b
-	}
-	if onlyChannel != "" {
-		b, ok := bindings[onlyChannel]
-		if !ok || !b.Enabled {
-			return Assessment{}, problem(400, "invalid_channel", "请选择策略中已启用的通道")
-		}
 	}
 	raw, _ := json.Marshal(p.Config)
 	candidates := []routeCandidate{}

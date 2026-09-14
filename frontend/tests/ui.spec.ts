@@ -233,6 +233,156 @@ for (const width of [1440, 768, 390, 320]) {
   });
 }
 
+for (const width of [1440, 390]) {
+  test(`keyword ignore editing, trial and records at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const zeroCost = {
+      status: "zero",
+      amount_cny: "0",
+      reserved_cny: "0",
+      period: "",
+      note: "关键词忽略，未调用模型",
+    };
+    const usage = {
+      reported: true,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+    };
+    const ignored = {
+      id: "ignored-1",
+      kind: "production",
+      policy_id: "policy-1",
+      client_id: "client-1",
+      model: "",
+      channel_id: "",
+      keyword_ignored: true,
+      flagged: false,
+      confidence: null,
+      threshold: 0,
+      reason: "关键词忽略，未调用模型",
+      error_code: "",
+      latency_ms: 1,
+      attempt_count: 0,
+      attempts: [],
+      usage,
+      cost: zeroCost,
+      input_stored: false,
+      created_at: "2026-09-13T04:30:00Z",
+    };
+    let saved: Record<string, unknown> | undefined;
+    await page.route("**/admin/policies/policy-1/config", async (route) => {
+      saved = route.request().postDataJSON().config;
+      await route.fulfill({
+        json: {
+          id: "policy-1",
+          name: "默认内容审核",
+          alias: "abuse-audit-v1",
+          enabled: true,
+          revision: 2,
+          config: saved,
+        },
+      });
+    });
+    await page.route("**/admin/policies/policy-1/test", async (route) => {
+      expect(route.request().postDataJSON().config.ignore_keywords).toEqual([
+        "指定短语",
+        "Allow",
+      ]);
+      await route.fulfill({
+        json: {
+          id: "ignored-1",
+          model: "abuse-audit-v1",
+          actual_model: "",
+          channel_id: "",
+          attempt_count: 0,
+          latency_ms: 1,
+          usage,
+          cost: zeroCost,
+          results: [
+            {
+              flagged: false,
+              category_scores: { illicit: 0 },
+              audit: {
+                keyword_ignored: true,
+                confidence: 0,
+                threshold: 0,
+                reason: ignored.reason,
+              },
+            },
+          ],
+        },
+      });
+    });
+    await page.route("**/admin/audit-logs?**", (route) =>
+      route.fulfill({ json: { items: [ignored], total: 1 } }),
+    );
+    await page.route("**/admin/audit-logs/ignored-1", (route) =>
+      route.fulfill({ json: ignored }),
+    );
+    await page.goto("/");
+    await page.getByLabel("关键词忽略", { exact: true }).check();
+    const phrases = page.getByLabel(
+      "忽略关键词或短语（每行一条，区分大小写）",
+      { exact: true },
+    );
+    await phrases.fill("  指定短语  \n\nAllow\n指定短语\n");
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "保存并生效" }).click();
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeDisabled();
+    expect(saved?.keyword_ignore_enabled).toBe(true);
+    expect(saved?.ignore_keywords).toEqual(["指定短语", "Allow"]);
+    await expect(phrases).toHaveValue("指定短语\nAllow");
+    await page.screenshot({
+      path: testInfo.outputPath("keyword-policy.png"),
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.getByRole("tab", { name: "审核试跑" }).click();
+    await page
+      .getByLabel("待审核内容", { exact: true })
+      .fill("前文指定短语后文");
+    await page.getByRole("button", { name: "运行审核", exact: true }).click();
+    await expect(
+      page.getByText("关键词忽略 · 未命中", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".test-result")).toContainText("实际调用 0 次");
+    await navigate(page, "审核记录");
+    const filterRequest = page.waitForRequest(
+      (req) =>
+        req.url().includes("/admin/audit-logs?") &&
+        new URL(req.url()).searchParams.get("result") === "keyword_ignored",
+    );
+    await page
+      .getByRole("combobox", { name: "结果", exact: true })
+      .selectOption("keyword_ignored");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    await filterRequest;
+    await expect(page.locator("tbody")).toContainText("关键词忽略");
+    await page.getByRole("button", { name: "详情", exact: true }).click();
+    await expect(page.getByRole("dialog")).toContainText("关键词忽略");
+    await expect(page.getByRole("dialog")).toContainText("未调用模型");
+    await expect(page.getByRole("dialog")).toContainText("¥0");
+    await expect(page.getByRole("dialog")).not.toContainText(
+      "模型原始输出未保存",
+    );
+    await page.screenshot({
+      path: testInfo.outputPath("keyword-record.png"),
+      fullPage: true,
+    });
+  });
+}
+
 test("policy edits and billing forms preserve actions", async ({
   page,
 }, testInfo) => {

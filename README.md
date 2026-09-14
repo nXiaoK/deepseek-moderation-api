@@ -171,6 +171,14 @@ Content-Type: application/json
 docker compose exec -T db pg_dump -U audit -d audit > audit-backup.sql
 ```
 
+## 关键词忽略
+
+在“审核策略 → 审核规则”开启“关键词忽略”，每行填写一个关键词或短语，保存后生效。文本包含任意一条时，直接返回未命中；匹配区分大小写、不使用正则表达式、不做 OCR。页面去除每行首尾空白、空行和重复项。最多 100 条，每条 1000 字，合计 16000 字；关闭开关可保留列表但停用匹配。API 配置字段为 `keyword_ignore_enabled` 和 `ignore_keywords`（字符串数组，按字面匹配，空字符串或纯空白项被拒绝）。
+
+匹配后整个请求放行，含图请求也不会再调用模型。鉴权、权限、策略启停、限流、输入校验仍然执行；关键词忽略优先于模型路由、结果缓存和模型预算检查，不产生模型调用、Token 或费用。正式请求、未保存配置试跑、批量评测使用同一规则。未匹配时继续正常审核。
+
+响应始终为 `flagged=false`、`categories.illicit=false`、`category_scores.illicit=0`（即使阈值为 0），并包含 `results[0].audit.keyword_ignored=true`；兼容字段 `confidence=0` 不代表模型评分。正式接口的 `X-Audit-Input-Scope` 为 `keyword-ignored`。审核记录和评测显示“关键词忽略”，模型评分为空、调用次数为 0、费用为 0；不记录匹配到的具体短语。原文是否保存仍遵循策略配置。审核记录可按“关键词忽略”筛选，CSV 导出保留此标记。策略复制、导入和导出包含忽略配置，旧策略默认关闭，无需数据库迁移。
+
 ## 验证
 
 ```sh

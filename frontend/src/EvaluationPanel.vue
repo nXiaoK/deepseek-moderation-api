@@ -43,6 +43,7 @@ interface Result {
   request_id: string;
   model: string;
   confidence: number | null;
+  keyword_ignored?: boolean;
   flagged: boolean;
   threshold: number;
   reason: string;
@@ -799,7 +800,10 @@ onBeforeUnmount(() => {
                 <td>{{ expectedLabels[row.expected] }}</td>
                 <td>
                   <span
-                    v-if="row.status === 'completed' && row.confidence != null"
+                    v-if="
+                      row.status === 'completed' &&
+                      (row.confidence != null || row.keyword_ignored)
+                    "
                     class="badge"
                     :class="
                       row.expected !== 'manual' &&
@@ -807,7 +811,13 @@ onBeforeUnmount(() => {
                         ? 'red'
                         : 'green'
                     "
-                    >{{ row.flagged ? "命中" : "放行" }}</span
+                    >{{
+                      row.keyword_ignored
+                        ? "关键词忽略"
+                        : row.flagged
+                          ? "命中"
+                          : "放行"
+                    }}</span
                   ><span v-else class="badge gray">{{
                     statusLabels[row.status] || row.status
                   }}</span
