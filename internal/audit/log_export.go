@@ -23,6 +23,19 @@ func parseLogFilter(q url.Values) (LogFilter, error) {
 		size = 20
 	}
 	f := LogFilter{Page: page, PageSize: size, Kind: q.Get("kind"), PolicyID: q.Get("policy_id"), ClientID: q.Get("client_id"), Result: q.Get("result"), From: q.Get("from"), To: q.Get("to"), RequestID: strings.TrimSpace(q.Get("request_id")), Model: q.Get("model"), ChannelID: q.Get("channel_id"), ErrorCode: q.Get("error_code")}
+	f.KeywordIgnore = q.Get("keyword_ignore")
+	switch f.KeywordIgnore {
+	case "", "exclude", "include", "only":
+	default:
+		return f, problem(400, "invalid_filter", "关键词忽略筛选无效")
+	}
+	if value := q.Get("latency_gt_ms"); value != "" {
+		ms, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || ms < 0 || ms > 86400000 {
+			return f, problem(400, "invalid_filter", "耗时阈值必须为 0～86400000 毫秒的整数")
+		}
+		f.LatencyGTMS = &ms
+	}
 	for _, value := range []string{f.RequestID, f.Model, f.ChannelID, f.ErrorCode, f.PolicyID, f.ClientID} {
 		if len(value) > 200 {
 			return f, problem(400, "invalid_filter", "筛选值过长")

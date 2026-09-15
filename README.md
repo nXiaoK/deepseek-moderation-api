@@ -179,6 +179,8 @@ docker compose exec -T db pg_dump -U audit -d audit > audit-backup.sql
 
 响应始终为 `flagged=false`、`categories.illicit=false`、`category_scores.illicit=0`（即使阈值为 0），并包含 `results[0].audit.keyword_ignored=true`；兼容字段 `confidence=0` 不代表模型评分。正式接口的 `X-Audit-Input-Scope` 为 `keyword-ignored`。审核记录和评测显示“关键词忽略”，模型评分为空、调用次数为 0、费用为 0；不记录匹配到的具体短语。原文是否保存仍遵循策略配置。审核记录可按“关键词忽略”筛选，CSV 导出保留此标记。策略复制、导入和导出包含忽略配置，旧策略默认关闭，无需数据库迁移。
 
+审核记录默认隐藏关键词忽略记录，可用独立的“关键词忽略”筛选选择隐藏、包含或仅查看，并与命中/未命中/失败等结果条件组合。“耗时”支持大于 1000、2000、3000、5000、10000 ms，按整次审核请求耗时严格比较（不包含恰好等于阈值的记录），不限时显示所有耗时。列表、分页总数和 CSV 导出沿用相同条件，旧记录缺少关键词标记时正常显示。接口参数：`keyword_ignore=exclude|include|only`（默认 exclude）、`latency_gt_ms=非负整数`（可自定义，最多 86400000）；原有 `result=keyword_ignored` 链接仍可查看关键词忽略记录。直接读取记录详情不受列表筛选影响。
+
 ## 验证
 
 ```sh

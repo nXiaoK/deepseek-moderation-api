@@ -190,6 +190,8 @@ const logItems = ref<AuditLog[]>([]),
   logPage = ref(1),
   logKind = ref(""),
   logResult = ref(""),
+  logKeywordIgnore = ref("exclude"),
+  logLatencyGT = ref(""),
   logPolicy = ref(""),
   logClient = ref(""),
   logFrom = ref(""),
@@ -619,6 +621,8 @@ function logQuery() {
     error_code: logErrorCode.value,
     kind: logKind.value,
     result: logResult.value,
+    keyword_ignore: logKeywordIgnore.value,
+    latency_gt_ms: logLatencyGT.value,
     policy_id: logPolicy.value,
     client_id: logClient.value,
   });
@@ -674,6 +678,8 @@ async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
   logErrorCode.value = filter.error_code || "";
   logRequestID.value = "";
   logResult.value = "";
+  logKeywordIgnore.value = "exclude";
+  logLatencyGT.value = "";
   logPage.value = 1;
   await navigate("logs");
 }
@@ -1361,8 +1367,27 @@ window.addEventListener("beforeunload", (e) => {
                   <option value="">全部</option>
                   <option value="flagged">命中</option>
                   <option value="allow">未命中</option>
-                  <option value="keyword_ignored">关键词忽略</option>
                   <option value="error">失败 / 拒绝</option>
+                </select></label
+              ><label
+                >关键词忽略<select v-model="logKeywordIgnore">
+                  <option value="exclude">隐藏关键词忽略（默认）</option>
+                  <option value="include">包含关键词忽略</option>
+                  <option value="only">仅关键词忽略</option>
+                </select></label
+              ><label
+                >耗时<select
+                  v-model="logLatencyGT"
+                  title="整次审核请求耗时，严格大于所选阈值"
+                >
+                  <option value="">不限</option>
+                  <option
+                    v-for="ms in [1000, 2000, 3000, 5000, 10000]"
+                    :key="ms"
+                    :value="String(ms)"
+                  >
+                    大于 {{ ms }} ms
+                  </option>
                 </select></label
               ><label
                 >策略<select v-model="logPolicy">

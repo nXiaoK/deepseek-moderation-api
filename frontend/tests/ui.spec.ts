@@ -361,11 +361,11 @@ for (const width of [1440, 390]) {
     const filterRequest = page.waitForRequest(
       (req) =>
         req.url().includes("/admin/audit-logs?") &&
-        new URL(req.url()).searchParams.get("result") === "keyword_ignored",
+        new URL(req.url()).searchParams.get("keyword_ignore") === "only",
     );
     await page
-      .getByRole("combobox", { name: "结果", exact: true })
-      .selectOption("keyword_ignored");
+      .getByRole("combobox", { name: "关键词忽略", exact: true })
+      .selectOption("only");
     await page.getByRole("button", { name: "筛选", exact: true }).click();
     await filterRequest;
     await expect(page.locator("tbody")).toContainText("关键词忽略");
@@ -1212,6 +1212,79 @@ test("invalid JSON is reported without treating it as application data", async (
   await navigate(page, "数据分析");
   await expect(page.getByRole("alert")).toContainText("服务返回了无效响应");
   await expect(page.locator(".app-shell")).toBeVisible();
+});
+
+test("audit log keyword visibility and latency filters persist through paging and export", async ({
+  page,
+}) => {
+  await page.route("**/admin/audit-logs?*", async (route) => {
+    await route.fulfill({ json: { items: [], total: 45 } });
+  });
+  await page.route("**/admin/audit-logs/export?*", (route) =>
+    route.fulfill({ contentType: "text/csv", body: "request_id\n" }),
+  );
+  await page.goto("/");
+  const initialRequest = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs?"),
+  );
+  await navigate(page, "审核记录");
+  expect(
+    new URL((await initialRequest).url()).searchParams.get("keyword_ignore"),
+  ).toBe("exclude");
+  const visibility = page.getByRole("combobox", {
+    name: "关键词忽略",
+    exact: true,
+  });
+  const latency = page.getByRole("combobox", { name: "耗时", exact: true });
+  await expect(visibility).toHaveValue("exclude");
+  await expect(latency).toHaveValue("");
+  for (const ms of ["1000", "2000", "3000", "5000", "10000"]) {
+    await latency.selectOption(ms);
+    const request = page.waitForRequest((req) =>
+      req.url().includes("/admin/audit-logs?"),
+    );
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    const q = new URL((await request).url()).searchParams;
+    expect(q.get("latency_gt_ms")).toBe(ms);
+    expect(q.get("keyword_ignore")).toBe("exclude");
+    expect(q.get("page")).toBe("1");
+  }
+  await visibility.selectOption("include");
+  await latency.selectOption("2000");
+  const applied = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs?"),
+  );
+  await page.getByRole("button", { name: "筛选", exact: true }).click();
+  await applied;
+  const next = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs?"),
+  );
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  const nextQuery = new URL((await next).url()).searchParams;
+  expect(nextQuery.get("page")).toBe("2");
+  expect(nextQuery.get("keyword_ignore")).toBe("include");
+  expect(nextQuery.get("latency_gt_ms")).toBe("2000");
+  const exportRequest = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs/export?"),
+  );
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "导出审核摘要 CSV", exact: true })
+    .click();
+  const exportQuery = new URL((await exportRequest).url()).searchParams;
+  await download;
+  expect(exportQuery.get("keyword_ignore")).toBe("include");
+  expect(exportQuery.get("latency_gt_ms")).toBe("2000");
+  await visibility.selectOption("only");
+  await latency.selectOption("");
+  const reset = page.waitForRequest((req) =>
+    req.url().includes("/admin/audit-logs?"),
+  );
+  await page.getByRole("button", { name: "筛选", exact: true }).click();
+  const resetQuery = new URL((await reset).url()).searchParams;
+  expect(resetQuery.get("page")).toBe("1");
+  expect(resetQuery.get("keyword_ignore")).toBe("only");
+  expect(resetQuery.get("latency_gt_ms")).toBe("");
 });
 
 test("audit summaries export active filters and stored text seeds manual evaluation", async ({

@@ -446,6 +446,16 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		args = append(args, value)
 		where = append(where, fmt.Sprintf(expr, len(args)))
 	}
+	// Keep the former result=keyword_ignored link working. Missing metadata on
+	// older records is treated as a regular audit, not a keyword bypass.
+	if f.Result == "keyword_ignored" || f.KeywordIgnore == "only" {
+		where = append(where, "metadata->>'keyword_ignored'='true'")
+	} else if f.KeywordIgnore != "include" {
+		where = append(where, "metadata->>'keyword_ignored' IS DISTINCT FROM 'true'")
+	}
+	if f.LatencyGTMS != nil {
+		add("(metadata->>'latency_ms')::bigint > $%d", *f.LatencyGTMS)
+	}
 	if f.Kind != "" {
 		add("kind=$%d", f.Kind)
 	}

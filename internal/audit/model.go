@@ -283,6 +283,8 @@ type AuditLog struct {
 	CreatedAt                time.Time      `json:"created_at"`
 }
 type LogFilter struct {
+	KeywordIgnore                              string
+	LatencyGTMS                                *int64
 	Page, PageSize                             int
 	Kind, PolicyID, ClientID, Result, From, To string
 	RequestID, Model, ChannelID, ErrorCode     string
