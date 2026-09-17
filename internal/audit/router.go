@@ -38,7 +38,7 @@ type channelState struct {
 	consecutive              int
 	calls, failures          int64
 	until                    time.Time
-	permanent, probe         bool
+	probe                    bool
 }
 type routeCandidate struct {
 	channel        ModelChannel
@@ -48,8 +48,7 @@ type routeCandidate struct {
 }
 type upstreamFailure struct {
 	*APIError
-	cooldown  time.Duration
-	permanent bool
+	cooldown time.Duration
 }
 
 func (e *upstreamFailure) Unwrap() error { return e.APIError }
@@ -70,12 +69,10 @@ func classifyUpstream(res *http.Response) error {
 		}
 	case res.StatusCode == 401 || res.StatusCode == 403:
 		e.Code = "upstream_auth_failed"
-		e.Message = "模型密钥或权限无效，请修正连接后重新保存通道"
-		e.permanent = true
+		e.Message = "模型密钥或权限无效，请检查连接配置"
 	case res.StatusCode >= 400 && res.StatusCode < 500:
 		e.Code = "upstream_config_invalid"
-		e.Message = "模型名称或参数不受支持，请修正后重新保存通道"
-		e.permanent = true
+		e.Message = "模型名称或参数不受支持，请检查通道配置"
 	}
 	if detail := upstreamErrorDetail(res); detail != "" {
 		e.Message += fmt.Sprintf("（HTTP %d：%s）", res.StatusCode, detail)
@@ -118,7 +115,6 @@ func (e *Engine) resetChannel(id string) {
 	if st := e.routes[id]; st != nil {
 		st.signature = ""
 		st.until = time.Time{}
-		st.permanent = false
 		st.probe = false
 		st.consecutive = 0
 		st.lastSuccess, st.lastFailure = time.Time{}, time.Time{}
@@ -145,9 +141,7 @@ func (e *Engine) channelHealth(id string) ChannelHealth {
 			h.LastFailureAt = &value
 		}
 		h.LastErrorCode = st.lastError
-		if st.permanent {
-			h.Status = "configuration_error"
-		} else if st.until.After(time.Now()) {
+		if st.until.After(time.Now()) {
 			h.Status = "cooling"
 		} else if !st.until.IsZero() {
 			h.Status = "half_open"
@@ -158,12 +152,13 @@ func (e *Engine) channelHealth(id string) ChannelHealth {
 
 // Selection and capacity reservation are atomic. RNG injection makes boundary
 // tests deterministic without probabilistic/flaky distribution assertions.
-func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now time.Time, draw func(int) int) (*routeCandidate, func(error, bool), error) {
+func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, used map[string]bool, now time.Time, draw func(int) int) (*routeCandidate, func(error, bool), error) {
 	e.routeMu.Lock()
 	defer e.routeMu.Unlock()
 	if len(e.slots) >= cap(e.slots) {
 		return nil, nil, problem(503, "capacity_exceeded", "审核并发已满，请稍后重试")
 	}
+	singleChannel := len(candidates) == 1
 	priority := 101
 	weight := 0
 	eligible := []int{}
@@ -183,13 +178,12 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 			st.revision = c.channel.Revision
 			st.signature = c.signature
 			st.until = time.Time{}
-			st.permanent = false
 			st.probe = false
 			st.consecutive = 0
 			st.lastSuccess, st.lastFailure = time.Time{}, time.Time{}
 			st.lastError = ""
 		}
-		if st.permanent || st.until.After(now) || st.probe || st.inFlight >= c.channel.MaxConcurrency {
+		if (!singleChannel && (st.until.After(now) || st.probe)) || st.inFlight >= c.channel.MaxConcurrency {
 			continue
 		}
 		if c.binding.Priority < priority {
@@ -217,7 +211,8 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 	c := candidates[chosen]
 	st := e.routes[c.channel.ID]
 	st.inFlight++
-	if !st.until.IsZero() {
+	isProbe := !singleChannel && !st.until.IsZero()
+	if isProbe {
 		st.probe = true
 	}
 	release := func(err error, sent bool) {
@@ -234,8 +229,9 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 		if st.signature != c.signature {
 			return
 		}
-		wasProbe := st.probe
-		st.probe = false
+		if isProbe {
+			st.probe = false
+		}
 		if !sent {
 			return
 		}
@@ -257,18 +253,25 @@ func (e *Engine) acquire(candidates []routeCandidate, used map[string]bool, now 
 			return
 		}
 		st.consecutive++
+		// A sole eligible channel must still be attempted on every request.
+		// Do not create or extend its cooldown, even for authentication or 429 errors.
+		if singleChannel {
+			return
+		}
+		cooldown := time.Duration(0)
 		var upstream *upstreamFailure
 		if errors.As(err, &upstream) {
-			if upstream.permanent {
-				st.permanent = true
-			}
-			if upstream.cooldown > 0 {
-				st.until = time.Now().Add(upstream.cooldown)
-				return
-			}
+			cooldown = upstream.cooldown
 		}
-		if wasProbe || st.consecutive >= 3 {
-			st.until = time.Now().Add(30 * time.Second)
+		if isProbe || st.consecutive >= settings.failureThreshold() {
+			cooldown = max(cooldown, settings.failureCooldown())
+		}
+		if cooldown > 0 {
+			// Concurrent failures must not shorten an existing cooldown.
+			until := time.Now().Add(cooldown)
+			if until.After(st.until) {
+				st.until = until
+			}
 		}
 	}
 	return &c, release, nil
@@ -555,7 +558,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		if ctx.Err() != nil {
 			return Assessment{}, problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")
 		}
-		c, release, e := s.Engine.acquire(candidates, used, time.Now(), rand.IntN)
+		c, release, e := s.Engine.acquire(candidates, p.Config, used, time.Now(), rand.IntN)
 		if e != nil {
 			return Assessment{}, e
 		}

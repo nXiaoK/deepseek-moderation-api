@@ -416,6 +416,35 @@ async function test() {
         /><small>包含首次调用。每个通道最多尝试一次。</small></label
       >
     </div>
+    <div class="form-grid">
+      <label>
+        连续失败次数
+        <input
+          v-model.number="config.failure_threshold"
+          type="number"
+          min="1"
+          max="100"
+          :disabled="busy"
+        />
+        <small>默认 3 次；成功调用后重新计数。</small>
+      </label>
+      <label>
+        失败冷却时间（分钟）
+        <input
+          v-model.number="config.failure_cooldown_minutes"
+          type="number"
+          min="1"
+          max="1440"
+          :disabled="busy"
+        />
+        <small>默认 30 分钟；到期后尝试恢复，仍失败则继续冷却。</small>
+      </label>
+    </div>
+    <p class="hint">
+      达到连续失败次数后暂停调用该通道，按优先级使用其他通道。同级按权重分流，同级均不可用时使用下一级。
+      只有一个可用审核通道时，每次请求仍尝试调用（缓存命中除外）。限流遵守上游建议，达到失败阈值时取上游建议与失败冷却时间中的较长值。
+      同一通道的健康状态由所有策略共享，冷却时长采用触发失败的策略设置。
+    </p>
     <p class="muted small">
       sub2api HTTP 超时需覆盖总调用时限及约 5 秒结算时间，重试次数建议为
       0。全部模型失败时返回审核错误，由 sub2api 的失败策略处理。

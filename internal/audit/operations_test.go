@@ -31,6 +31,18 @@ func TestOperationsReportAlertsAndBoundaries(t *testing.T) {
 	if !found {
 		t.Fatal("unverified channel called healthy")
 	}
+	app.Engine.routes[channels[0].ID] = &channelState{
+		revision: channels[0].Revision,
+		until:    time.Now().Add(30 * time.Minute),
+	}
+	if err := json.Unmarshal(call("GET", "/admin/operations", nil, 200), &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, alert := range report.Alerts {
+		if alert.ID == "policy:"+p.ID {
+			t.Fatal("sole cooling channel incorrectly reported unavailable", alert)
+		}
+	}
 	if _, err := s.DB.Exec("UPDATE audit_model_channels SET enabled=FALSE WHERE id=$1", channels[0].ID); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +80,7 @@ func TestOperationsReportAlertsAndBoundaries(t *testing.T) {
 func TestCancellationCountsWithoutPoisoningChannel(t *testing.T) {
 	e := NewEngine(4)
 	for i := 0; i < 3; i++ {
-		c, release, err := e.acquire([]routeCandidate{candidate("c", 1, 1)}, nil, time.Now(), func(int) int { return 0 })
+		c, release, err := e.acquire([]routeCandidate{candidate("c", 1, 1)}, DefaultSettings(), nil, time.Now(), func(int) int { return 0 })
 		if err != nil || c == nil {
 			t.Fatal(err)
 		}
@@ -78,7 +90,7 @@ func TestCancellationCountsWithoutPoisoningChannel(t *testing.T) {
 	if health.Calls != 3 || health.Failures != 3 || health.Status != "ready" || health.Verified || health.LastErrorCode != "request_cancelled" {
 		t.Fatal(health)
 	}
-	_, release, err := e.acquire([]routeCandidate{candidate("c", 1, 1)}, nil, time.Now(), func(int) int { return 0 })
+	_, release, err := e.acquire([]routeCandidate{candidate("c", 1, 1)}, DefaultSettings(), nil, time.Now(), func(int) int { return 0 })
 	if err != nil {
 		t.Fatal(err)
 	}

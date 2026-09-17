@@ -50,7 +50,7 @@ func TestRouterPriorityWeightCapacityAndCooldown(t *testing.T) {
 		draw int
 		want string
 	}{{0, "a"}, {69, "a"}, {70, "b"}, {99, "b"}} {
-		c, release, err := e.acquire(cs, nil, now, func(n int) int {
+		c, release, err := e.acquire(cs, DefaultSettings(), nil, now, func(n int) int {
 			if n != 100 {
 				t.Fatalf("weights: %d", n)
 			}
@@ -61,9 +61,9 @@ func TestRouterPriorityWeightCapacityAndCooldown(t *testing.T) {
 		}
 		release(nil, true)
 	}
-	a, releaseA, _ := e.acquire(cs, nil, now, func(int) int { return 0 })
-	b, releaseB, _ := e.acquire(cs, nil, now, func(int) int { return 0 })
-	backup, releaseC, _ := e.acquire(cs, nil, now, func(int) int { return 0 })
+	a, releaseA, _ := e.acquire(cs, DefaultSettings(), nil, now, func(int) int { return 0 })
+	b, releaseB, _ := e.acquire(cs, DefaultSettings(), nil, now, func(int) int { return 0 })
+	backup, releaseC, _ := e.acquire(cs, DefaultSettings(), nil, now, func(int) int { return 0 })
 	if a.channel.ID != "a" || b.channel.ID != "b" || backup.channel.ID != "backup" {
 		t.Fatal("capacity did not advance priority")
 	}
@@ -71,19 +71,19 @@ func TestRouterPriorityWeightCapacityAndCooldown(t *testing.T) {
 	releaseB(nil, true)
 	releaseC(nil, true)
 	for i := 0; i < 3; i++ {
-		_, done, _ := e.acquire(cs, map[string]bool{"b": true, "backup": true}, now, func(int) int { return 0 })
+		_, done, _ := e.acquire(cs, DefaultSettings(), map[string]bool{"b": true, "backup": true}, now, func(int) int { return 0 })
 		done(problem(503, "upstream_unavailable", "test"), true)
 	}
-	c, release, _ := e.acquire(cs, nil, time.Now(), func(int) int { return 0 })
+	c, release, _ := e.acquire(cs, DefaultSettings(), nil, time.Now(), func(int) int { return 0 })
 	if c.channel.ID != "b" {
 		t.Fatal("cooling model selected")
 	}
 	release(nil, true)
-	c, release, _ = e.acquire(cs, nil, time.Now().Add(time.Minute), func(int) int { return 0 })
+	c, release, _ = e.acquire(cs, DefaultSettings(), nil, time.Now().Add(31*time.Minute), func(int) int { return 0 })
 	if c.channel.ID != "a" {
 		t.Fatal("half-open probe missing")
 	}
-	next, done, _ := e.acquire(cs, nil, time.Now().Add(time.Minute), func(int) int { return 0 })
+	next, done, _ := e.acquire(cs, DefaultSettings(), nil, time.Now().Add(31*time.Minute), func(int) int { return 0 })
 	if next.channel.ID != "b" {
 		t.Fatal("multiple half-open probes")
 	}
@@ -102,7 +102,7 @@ func TestRouterConcurrentReservationAndStaleCompletion(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, release, _ := e.acquire(cs, nil, time.Now(), func(int) int { return 0 })
+			c, release, _ := e.acquire(cs, DefaultSettings(), nil, time.Now(), func(int) int { return 0 })
 			if c != nil {
 				acquired <- release
 			}
@@ -115,7 +115,7 @@ func TestRouterConcurrentReservationAndStaleCompletion(t *testing.T) {
 	}
 	e.resetChannel("a")
 	for done := range acquired {
-		done(&upstreamFailure{APIError: &APIError{503, "upstream_auth_failed", "bad key"}, permanent: true}, true)
+		done(&upstreamFailure{APIError: &APIError{503, "upstream_auth_failed", "bad key"}}, true)
 	}
 	if e.channelHealth("a").Status != "ready" || e.channelHealth("a").InFlight != 0 {
 		t.Fatal("stale call poisoned reset state")
@@ -131,8 +131,8 @@ func TestRouterHTTPClassification(t *testing.T) {
 		if code == 429 && e.cooldown != 123*time.Second {
 			t.Fatal("retry-after ignored")
 		}
-		if code < 429 && !e.permanent {
-			t.Fatal("configuration error not isolated")
+		if code < 429 && e.Code != "upstream_auth_failed" && e.Code != "upstream_config_invalid" {
+			t.Fatal("configuration error not classified")
 		}
 	}
 	if retryable(problem(429, "budget_exceeded", "")) || retryable(problem(503, "cost_record_unavailable", "")) {

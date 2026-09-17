@@ -135,7 +135,7 @@ func TestUpstreamErrorDetail(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := classifyUpstream(&http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tt.body))}).(*upstreamFailure)
-			if err.Code != "upstream_config_invalid" || !err.permanent {
+			if err.Code != "upstream_config_invalid" {
 				t.Fatal("error classification changed")
 			}
 			if tt.want != "" && !strings.Contains(err.Message, tt.want) {

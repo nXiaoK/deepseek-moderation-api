@@ -383,6 +383,42 @@ for (const width of [1440, 390]) {
   });
 }
 
+test("policy cooldown settings show legacy defaults and persist edits", async ({
+  page,
+}) => {
+  let saved: Record<string, unknown> | undefined;
+  await page.route("**/admin/policies/policy-1/config", async (route) => {
+    saved = route.request().postDataJSON().config;
+    await route.fulfill({
+      json: {
+        id: "policy-1",
+        name: "默认内容审核",
+        alias: "abuse-audit-v1",
+        enabled: true,
+        revision: 2,
+        config: saved,
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("tab", { name: "模型调度" }).click();
+  const threshold = page.getByRole("spinbutton", { name: "连续失败次数" });
+  const cooldown = page.getByRole("spinbutton", {
+    name: "失败冷却时间（分钟）",
+  });
+  await expect(threshold).toHaveValue("3");
+  await expect(cooldown).toHaveValue("30");
+  await expect(page.getByRole("button", { name: "保存并生效" })).toBeDisabled();
+  await threshold.fill("5");
+  await cooldown.fill("45");
+  await page.getByRole("button", { name: "保存并生效" }).click();
+  await expect(page.getByRole("button", { name: "保存并生效" })).toBeDisabled();
+  expect(saved?.failure_threshold).toBe(5);
+  expect(saved?.failure_cooldown_minutes).toBe(45);
+  await expect(threshold).toHaveValue("5");
+  await expect(cooldown).toHaveValue("45");
+});
+
 test("policy edits and billing forms preserve actions", async ({
   page,
 }, testInfo) => {

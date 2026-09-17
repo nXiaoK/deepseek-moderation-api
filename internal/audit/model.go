@@ -89,12 +89,29 @@ type PolicySettings struct {
 	RetentionDays            int              `json:"retention_days"`
 	TotalTimeoutMS           int              `json:"total_timeout_ms"`
 	MaxAttempts              int              `json:"max_attempts"`
+	FailureThreshold         int              `json:"failure_threshold"`
+	FailureCooldownMinutes   int              `json:"failure_cooldown_minutes"`
 	Channels                 []ChannelBinding `json:"channels"`
 }
 
 func DefaultSettings() PolicySettings {
 	storeOutput := false
-	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, Channels: []ChannelBinding{}}
+	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, FailureThreshold: 3, FailureCooldownMinutes: 30, Channels: []ChannelBinding{}}
+}
+
+// Zero preserves compatibility with policy JSON saved before these settings existed.
+func (c PolicySettings) failureThreshold() int {
+	if c.FailureThreshold == 0 {
+		return 3
+	}
+	return c.FailureThreshold
+}
+func (c PolicySettings) failureCooldown() time.Duration {
+	minutes := c.FailureCooldownMinutes
+	if minutes == 0 {
+		minutes = 30
+	}
+	return time.Duration(minutes) * time.Minute
 }
 func (c PolicySettings) retainModelOutput() bool {
 	return c.StoreModelOutput == nil || *c.StoreModelOutput
@@ -131,6 +148,12 @@ func (c PolicySettings) Validate() error {
 	}
 	if c.MaxAttempts < 1 || c.MaxAttempts > 5 {
 		return errors.New("最多调用次数必须为 1～5 次，包含首次调用")
+	}
+	if c.FailureThreshold < 0 || c.FailureThreshold > 100 {
+		return errors.New("连续失败次数必须为 1～100 次（0 使用默认 3 次）")
+	}
+	if c.FailureCooldownMinutes < 0 || c.FailureCooldownMinutes > 1440 {
+		return errors.New("失败冷却时间必须为 1～1440 分钟（0 使用默认 30 分钟）")
 	}
 	if len(c.Channels) > 100 {
 		return errors.New("每个策略最多绑定 100 个模型通道")

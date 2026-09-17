@@ -100,15 +100,16 @@ func (s *Server) operations(w http.ResponseWriter, r *http.Request) error {
 		if !p.Enabled {
 			continue
 		}
-		available := false
+		available, eligible := false, 0
 		for _, binding := range p.Config.Channels {
 			c, ok := byID[binding.ChannelID]
-			if ok && binding.Enabled && c.Enabled && c.CredentialActive && c.Health.Status != "configuration_error" && c.Health.Status != "cooling" {
-				available = true
-				break
+			if ok && binding.Enabled && c.Enabled && c.CredentialActive && c.Health.Status != "configuration_error" {
+				eligible++
+				available = available || c.Health.Status != "cooling"
 			}
 		}
-		if !available {
+		// A sole eligible channel is attempted even while its shared health is cooling.
+		if !available && eligible != 1 {
 			out.Alerts = append(out.Alerts, OperationalAlert{"policy:" + p.ID, "critical", p.Name + "：当前没有可调度通道", "channels"})
 		}
 	}
