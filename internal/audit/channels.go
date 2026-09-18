@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_tokens,c.max_concurrency,c.enabled,c.revision,c.cache_epoch,k.provider,k.base_url,k.active,c.text_only`
+const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_tokens,c.max_concurrency,c.enabled,c.revision,c.cache_epoch,k.provider,k.base_url,k.active,c.text_only,c.rpm`
 
 func scanChannel(row scanner) (ModelChannel, error) {
 	var c ModelChannel
-	err := row.Scan(&c.ID, &c.Name, &c.Model, &c.CredentialID, &c.TimeoutMS, &c.MaxTokens, &c.MaxConcurrency, &c.Enabled, &c.Revision, &c.CacheEpoch, &c.Provider, &c.BaseURL, &c.CredentialActive, &c.TextOnly)
+	err := row.Scan(&c.ID, &c.Name, &c.Model, &c.CredentialID, &c.TimeoutMS, &c.MaxTokens, &c.MaxConcurrency, &c.Enabled, &c.Revision, &c.CacheEpoch, &c.Provider, &c.BaseURL, &c.CredentialActive, &c.TextOnly, &c.RPM)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -143,6 +143,9 @@ func (s *Store) SaveChannel(ctx context.Context, actor string, c ModelChannel) (
 	if strings.TrimSpace(c.Name) == "" || len(c.Name) > 200 || c.MaxConcurrency < 1 || c.MaxConcurrency > 256 {
 		return c, problem(400, "invalid_channel", "请输入通道名称，并发上限必须为 1～256")
 	}
+	if c.RPM < 0 || c.RPM > 100000 {
+		return c, problem(400, "invalid_channel", "RPM 必须为 0～100000，0 表示不限额")
+	}
 	create := c.ID == ""
 	if create {
 		c.ID = randomToken("chan_")
@@ -162,10 +165,10 @@ func (s *Store) SaveChannel(ctx context.Context, actor string, c ModelChannel) (
 			return problem(400, "invalid_channel", err.Error())
 		}
 		if create {
-			_, err = tx.ExecContext(ctx, `INSERT INTO audit_model_channels(id,name,model,credential_id,timeout_ms,max_tokens,max_concurrency,enabled,cache_epoch,text_only) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, c.ID, c.Name, c.Model, c.CredentialID, c.TimeoutMS, c.MaxTokens, c.MaxConcurrency, c.Enabled, randomToken("cache_"), c.TextOnly)
+			_, err = tx.ExecContext(ctx, `INSERT INTO audit_model_channels(id,name,model,credential_id,timeout_ms,max_tokens,max_concurrency,enabled,cache_epoch,text_only,rpm) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, c.ID, c.Name, c.Model, c.CredentialID, c.TimeoutMS, c.MaxTokens, c.MaxConcurrency, c.Enabled, randomToken("cache_"), c.TextOnly, c.RPM)
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE audit_model_channels SET name=$1,model=$2,credential_id=$3,timeout_ms=$4,max_tokens=$5,max_concurrency=$6,enabled=$7,revision=revision+1,cache_epoch=$8,text_only=$11 WHERE id=$9 AND revision=$10`, c.Name, c.Model, c.CredentialID, c.TimeoutMS, c.MaxTokens, c.MaxConcurrency, c.Enabled, randomToken("cache_"), c.ID, c.Revision, c.TextOnly)
+		result, err := tx.ExecContext(ctx, `UPDATE audit_model_channels SET name=$1,model=$2,credential_id=$3,timeout_ms=$4,max_tokens=$5,max_concurrency=$6,enabled=$7,revision=revision+1,cache_epoch=$8,text_only=$11,rpm=$12 WHERE id=$9 AND revision=$10`, c.Name, c.Model, c.CredentialID, c.TimeoutMS, c.MaxTokens, c.MaxConcurrency, c.Enabled, randomToken("cache_"), c.ID, c.Revision, c.TextOnly, c.RPM)
 		if err != nil {
 			return err
 		}
@@ -215,6 +218,7 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) error {
 		TimeoutMS      int    `json:"timeout_ms"`
 		MaxTokens      int    `json:"max_tokens"`
 		MaxConcurrency int    `json:"max_concurrency"`
+		RPM            int    `json:"rpm"`
 		TextOnly       bool   `json:"text_only"`
 		Enabled        bool   `json:"enabled"`
 		Revision       int64  `json:"expected_revision"`
@@ -222,7 +226,7 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) error {
 	if err := readJSON(w, r, &in); err != nil {
 		return err
 	}
-	c, err := s.Store.SaveChannel(r.Context(), actor(r), ModelChannel{ID: r.PathValue("id"), Name: in.Name, Model: in.Model, CredentialID: in.CredentialID, TimeoutMS: in.TimeoutMS, MaxTokens: in.MaxTokens, MaxConcurrency: in.MaxConcurrency, TextOnly: in.TextOnly, Enabled: in.Enabled, Revision: in.Revision})
+	c, err := s.Store.SaveChannel(r.Context(), actor(r), ModelChannel{ID: r.PathValue("id"), Name: in.Name, Model: in.Model, CredentialID: in.CredentialID, TimeoutMS: in.TimeoutMS, MaxTokens: in.MaxTokens, MaxConcurrency: in.MaxConcurrency, RPM: in.RPM, TextOnly: in.TextOnly, Enabled: in.Enabled, Revision: in.Revision})
 	if err != nil {
 		return err
 	}

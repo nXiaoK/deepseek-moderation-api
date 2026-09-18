@@ -68,6 +68,7 @@ const channels = [
     timeout_ms: 4000,
     max_tokens: 512,
     max_concurrency: 8,
+    rpm: 0,
     text_only: true,
     enabled: true,
     revision: 1,

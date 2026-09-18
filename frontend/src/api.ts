@@ -65,6 +65,7 @@ export interface ModelChannel {
   timeout_ms: number;
   max_tokens: number;
   max_concurrency: number;
+  rpm: number;
   text_only: boolean;
   enabled: boolean;
   revision: number;
@@ -79,6 +80,7 @@ export interface ModelChannel {
     calls: number;
     failures: number;
     cooldown_until?: string;
+    rpm_used?: number;
   };
 }
 export interface AuditAttempt {

@@ -15,6 +15,7 @@ const empty = () => ({
   timeout_ms: 4000,
   max_tokens: 512,
   max_concurrency: 8,
+  rpm: 0,
   text_only: false,
   enabled: true,
   expected_revision: 0,
@@ -52,6 +53,7 @@ function edit(c: ModelChannel) {
     timeout_ms: c.timeout_ms,
     max_tokens: c.max_tokens,
     max_concurrency: c.max_concurrency,
+    rpm: c.rpm || 0,
     text_only: c.text_only,
     enabled: c.enabled,
     expected_revision: c.revision,
@@ -106,7 +108,7 @@ async function remove(c: ModelChannel) {
       <div>
         <h2>模型通道</h2>
         <p class="muted small">
-          每个通道绑定一个连接密钥和模型。并发上限由所有引用策略共享。
+          每个通道绑定一个连接密钥和模型。并发和 RPM 上限由所有引用策略共享。
         </p>
       </div>
       <div class="row">
@@ -133,6 +135,7 @@ async function remove(c: ModelChannel) {
             <th>通道 / 模型</th>
             <th>状态</th>
             <th>并发</th>
+            <th>RPM 已用 / 上限</th>
             <th>调用 / 失败</th>
             <th>引用策略</th>
             <th>操作</th>
@@ -181,6 +184,7 @@ async function remove(c: ModelChannel) {
               }}</small>
             </td>
             <td>{{ c.health.in_flight }} / {{ c.max_concurrency }}</td>
+            <td>{{ c.health.rpm_used || 0 }} / {{ c.rpm || "不限额" }}</td>
             <td>{{ c.health.calls }} / {{ c.health.failures }}</td>
             <td>{{ c.policy_names.join("、") || "未绑定" }}</td>
             <td>
@@ -221,7 +225,8 @@ async function remove(c: ModelChannel) {
     <p class="muted small">
       调用与失败统计从本服务进程启动开始累计；保存连接后重新学习健康状态。默认连续失败
       3 次冷却 30 分钟，可在“审核策略 →
-      模型调度”中调整；只有一个可用审核通道时每次仍尝试调用。当前并发和健康协调适用于单进程部署。
+      模型调度”中调整；单通道免除失败冷却，仍受并发和 RPM 限制。当前并发、RPM
+      和健康协调适用于单进程部署。
     </p>
   </section>
   <section class="panel config-panel">
@@ -284,7 +289,29 @@ async function remove(c: ModelChannel) {
             required
             :disabled="busy"
         /></label>
+        <label>
+          RPM（每分钟调用上限）
+          <input
+            v-model.number="form.rpm"
+            type="number"
+            min="0"
+            max="100000"
+            step="1"
+            required
+            :disabled="busy"
+          />
+          <small
+            >0 表示不限额；按最近 60
+            秒的调用统计，失败调用也计入，缓存命中不占用额度。</small
+          >
+        </label>
       </div>
+      <p class="hint">
+        同优先级按“剩余 RPM ×
+        权重”分流，额度用完后切换其他通道；不限额通道按同级最高剩余额度参与分流。
+        只有一个通道时也遵守 RPM
+        上限。额度由正式审核、试跑和评测共享，重启服务后重置。
+      </p>
       <p v-if="connection" class="hint">
         连接地址：{{ connection.base_url
         }}<template

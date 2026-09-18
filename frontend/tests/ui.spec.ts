@@ -383,6 +383,43 @@ for (const width of [1440, 390]) {
   });
 }
 
+test("model channel RPM can be created and edited", async ({ page }) => {
+  let created: Record<string, unknown> | undefined;
+  let updated: Record<string, unknown> | undefined;
+  await page.route("**/admin/model-channels", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    created = route.request().postDataJSON();
+    await route.fulfill({ json: { id: "new-channel", ...created } });
+  });
+  await page.route("**/admin/model-channels/channel-1", async (route) => {
+    updated = route.request().postDataJSON();
+    await route.fulfill({ json: { id: "channel-1", ...updated } });
+  });
+  await page.goto("/");
+  await navigate(page, "审核模型");
+  const rpm = page.getByRole("spinbutton", { name: "RPM（每分钟调用上限）" });
+  await expect(rpm).toHaveValue("0");
+  await page.getByLabel("通道名称", { exact: true }).fill("RPM 测试通道");
+  await page
+    .getByRole("combobox", { name: "连接密钥", exact: true })
+    .selectOption("credential-1");
+  await rpm.fill("120");
+  await page.getByRole("button", { name: "保存通道", exact: true }).click();
+  await expect(rpm).toHaveValue("0");
+  expect(created?.rpm).toBe(120);
+  await page
+    .getByRole("button", { name: "编辑 DeepSeek 主用", exact: true })
+    .click();
+  await expect(rpm).toHaveValue("0");
+  await rpm.fill("30");
+  await page.getByRole("button", { name: "保存通道", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "新增模型通道", exact: true }),
+  ).toBeVisible();
+  expect(updated?.rpm).toBe(30);
+  expect(updated?.expected_revision).toBe(1);
+});
+
 test("policy cooldown settings show legacy defaults and persist edits", async ({
   page,
 }) => {

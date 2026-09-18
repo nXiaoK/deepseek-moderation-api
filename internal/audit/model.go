@@ -179,6 +179,7 @@ type ModelChannel struct {
 	TimeoutMS        int           `json:"timeout_ms"`
 	MaxTokens        int           `json:"max_tokens"`
 	MaxConcurrency   int           `json:"max_concurrency"`
+	RPM              int           `json:"rpm"`
 	TextOnly         bool          `json:"text_only"`
 	Enabled          bool          `json:"enabled"`
 	Revision         int64         `json:"revision"`

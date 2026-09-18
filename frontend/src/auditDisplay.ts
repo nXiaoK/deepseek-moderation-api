@@ -21,6 +21,7 @@ const errors: Record<string, string> = {
   no_available_channel: "没有可用的模型通道",
   capacity_exceeded: "审核并发已满",
   credential_unavailable: "模型连接密钥不可用",
+  channel_rpm_exceeded: "审核通道每分钟调用额度已用完",
   pricing_unavailable: "预算设置下没有价格可估算的模型",
   budget_exceeded: "剩余预算不足",
   budget_pending: "存在待核对费用",

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type ChannelHealth struct {
 	InFlight              int        `json:"in_flight"`
 	Calls                 int64      `json:"calls"`
 	Failures              int64      `json:"failures"`
+	RPMUsed               int        `json:"rpm_used"`
 	CooldownUntil         time.Time  `json:"cooldown_until,omitempty"`
 }
 type channelState struct {
@@ -39,12 +41,15 @@ type channelState struct {
 	calls, failures          int64
 	until                    time.Time
 	probe                    bool
+	rpmPending               int
+	rpmCalls                 []time.Time
 }
 type routeCandidate struct {
 	channel        ModelChannel
 	binding        ChannelBinding
 	cfg            PolicyConfig
 	key, signature string
+	attemptAt      time.Time // Set by the request owner immediately before inference.
 }
 type upstreamFailure struct {
 	*APIError
@@ -126,6 +131,7 @@ func (e *Engine) channelHealth(id string) ChannelHealth {
 	defer e.routeMu.Unlock()
 	h := ChannelHealth{Status: "ready"}
 	if st := e.routes[id]; st != nil {
+		h.RPMUsed = st.rpmUsed(time.Now())
 		h.InFlight = st.inFlight
 		h.Calls = st.calls
 		h.Failures = st.failures
@@ -161,6 +167,8 @@ func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, u
 	singleChannel := len(candidates) == 1
 	priority := 101
 	weight := 0
+	rpmBlocked := false
+	remaining := make([]int, len(candidates))
 	eligible := []int{}
 	for i, c := range candidates {
 		if used[c.channel.ID] {
@@ -186,31 +194,54 @@ func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, u
 		if (!singleChannel && (st.until.After(now) || st.probe)) || st.inFlight >= c.channel.MaxConcurrency {
 			continue
 		}
+		usedRPM := st.rpmUsed(now)
+		if c.channel.RPM > 0 {
+			remaining[i] = c.channel.RPM - usedRPM
+			if remaining[i] <= 0 {
+				rpmBlocked = true
+				continue
+			}
+		}
 		if c.binding.Priority < priority {
 			priority = c.binding.Priority
 			eligible = nil
-			weight = 0
 		}
 		if c.binding.Priority == priority {
 			eligible = append(eligible, i)
-			weight += c.binding.Weight
 		}
 	}
 	if len(eligible) == 0 {
+		if rpmBlocked {
+			return nil, nil, problem(503, "channel_rpm_exceeded", "可调度审核通道已达到 RPM 上限，请稍后重试")
+		}
 		return nil, nil, nil
+	}
+	// An unlimited channel participates with the largest remaining allowance
+	// in this priority tier; when all are unlimited, preserve legacy weights.
+	unlimitedWeight := 1
+	for _, i := range eligible {
+		unlimitedWeight = max(unlimitedWeight, remaining[i])
+	}
+	for _, i := range eligible {
+		if candidates[i].channel.RPM == 0 {
+			remaining[i] = unlimitedWeight
+		}
+		weight += candidates[i].binding.Weight * remaining[i]
 	}
 	pick := draw(weight)
 	chosen := eligible[0]
 	for _, i := range eligible {
-		pick -= candidates[i].binding.Weight
+		pick -= candidates[i].binding.Weight * remaining[i]
 		if pick < 0 {
 			chosen = i
 			break
 		}
 	}
 	c := candidates[chosen]
+	c.attemptAt = now
 	st := e.routes[c.channel.ID]
 	st.inFlight++
+	st.rpmPending++
 	isProbe := !singleChannel && !st.until.IsZero()
 	if isProbe {
 		st.probe = true
@@ -219,7 +250,12 @@ func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, u
 		e.routeMu.Lock()
 		defer e.routeMu.Unlock()
 		st.inFlight--
+		st.rpmPending--
 		if sent {
+			// Keep quota across edits/resets, including stale request completions.
+			// Requests can complete out of order; sort by inference start time.
+			index, _ := slices.BinarySearchFunc(st.rpmCalls, c.attemptAt, time.Time.Compare)
+			st.rpmCalls = slices.Insert(st.rpmCalls, index, c.attemptAt)
 			st.calls++
 			if err != nil {
 				st.failures++
@@ -531,7 +567,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			}
 			return Assessment{}, e
 		}
-		candidates = append(candidates, routeCandidate{c, b, cfg, key, digest(c.CacheEpoch + key)})
+		candidates = append(candidates, routeCandidate{channel: c, binding: b, cfg: cfg, key: key, signature: digest(c.CacheEpoch + key)})
 	}
 	if kind == "production" && p.Config.ResultCacheTTL > 0 {
 		release, err := s.cacheLock(ctx, p, candidates, client, input, images)
@@ -617,6 +653,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		usage := Usage{Reported: true, ActualModel: cachedModel}
 		output := ""
 		if !cached {
+			c.attemptAt = time.Now()
 			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
 		}
 		if ctx.Err() != nil {
