@@ -967,6 +967,9 @@ test("evaluation workbench starts a bounded comparison and exports results", asy
     .getByRole("checkbox", { name: "选择 正常问候", exact: true })
     .check();
   await page.getByRole("button", { name: "运行评测", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "运行评测", exact: true }),
+  ).toContainText("RPM 为 10 时至少间隔 8 秒");
   await page.getByLabel("评测名称", { exact: true }).fill("回归对照");
   await page.getByRole("button", { name: "开始评测", exact: true }).click();
   await expect(

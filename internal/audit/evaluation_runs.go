@@ -265,7 +265,7 @@ func (s *Server) launchEvaluation(id, username string, plan evaluationPlan) bool
 	if s.closing {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(s.backgroundContext, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(s.backgroundContext, evaluationTimeout(plan))
 	if s.evaluationCancels == nil {
 		s.evaluationCancels = make(map[string]context.CancelFunc)
 	}
@@ -308,11 +308,45 @@ func (s *Store) cleanupEvaluations(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "UPDATE evaluation_results SET status=CASE WHEN status='running' THEN 'interrupted' ELSE 'skipped' END WHERE status IN ('pending','running') AND run_id IN (SELECT id FROM evaluation_runs WHERE status IN ('queued','running') AND created_at<NOW()-INTERVAL '35 minutes')"); err != nil {
+	rows, err := tx.QueryContext(ctx, "SELECT id,created_at,plan_cipher FROM evaluation_runs WHERE status IN ('queued','running') AND created_at<NOW()-INTERVAL '35 minutes'")
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE evaluation_runs SET status='interrupted',message='评测已超过执行时限，未自动重发调用',finished_at=NOW(),completed=(SELECT COUNT(*) FROM evaluation_results WHERE run_id=evaluation_runs.id AND status IN ('completed','error','interrupted')) WHERE status IN ('queued','running') AND created_at<NOW()-INTERVAL '35 minutes'"); err != nil {
+	var expired []string
+	now := time.Now()
+	for rows.Next() {
+		var id string
+		var created time.Time
+		var encrypted []byte
+		if err := rows.Scan(&id, &created, &encrypted); err != nil {
+			rows.Close()
+			return err
+		}
+		raw, err := s.Vault.Open(encrypted, "evaluation-run:"+id)
+		var plan evaluationPlan
+		if err == nil {
+			err = json.Unmarshal([]byte(raw), &plan)
+		}
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		if !created.Add(evaluationTimeout(plan) + 5*time.Minute).After(now) {
+			expired = append(expired, id)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
 		return err
+	}
+	for _, id := range expired {
+		if _, err := tx.ExecContext(ctx, "UPDATE evaluation_results SET status=CASE WHEN status='running' THEN 'interrupted' ELSE 'skipped' END WHERE status IN ('pending','running') AND run_id=$1 AND EXISTS(SELECT 1 FROM evaluation_runs WHERE id=$1 AND status IN ('queued','running'))", id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE evaluation_runs SET status='interrupted',message='评测已超过执行时限，未自动重发调用',finished_at=NOW(),completed=(SELECT COUNT(*) FROM evaluation_results WHERE run_id=evaluation_runs.id AND status IN ('completed','error','interrupted')) WHERE id=$1 AND status IN ('queued','running')", id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -322,6 +356,8 @@ func (s *Server) executeEvaluation(ctx context.Context, id, username string, pla
 		return
 	}
 	spent := new(big.Int)
+	pacer := evaluationPacer{}
+	ctx = context.WithValue(ctx, evaluationPacingKey{}, pacer)
 	sequence := 0
 	for _, sample := range plan.Samples {
 		for _, target := range plan.Targets {
@@ -362,6 +398,21 @@ func (s *Server) executeEvaluation(ctx context.Context, id, username string, pla
 						s.finishEvaluation(id, "interrupted", "评测已停止")
 						return
 					case <-time.After(time.Second):
+					}
+				}
+				if delay := pacer.delay(plan, target, sample.Input, time.Now()); delay > 0 {
+					message := fmt.Sprintf("按通道 RPM 放慢评测，等待约 %.1f 秒", delay.Seconds())
+					if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message=$2 WHERE id=$1 AND status='running'", id, message); err != nil {
+						s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
+						return
+					}
+					if err := waitEvaluationDelay(ctx, delay); err != nil {
+						s.finishEvaluation(id, "interrupted", "评测已停止")
+						return
+					}
+					if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message='' WHERE id=$1 AND status='running'", id); err != nil {
+						s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
+						return
 					}
 				}
 				requestID := randomToken("audit_")

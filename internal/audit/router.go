@@ -656,6 +656,9 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			c.attemptAt = time.Now()
 			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
 		}
+		if pacer, ok := ctx.Value(evaluationPacingKey{}).(evaluationPacer); ok && usage.Attempted {
+			pacer[c.channel.ID] = c.attemptAt
+		}
 		if ctx.Err() != nil {
 			release(ctx.Err(), usage.Attempted)
 			e = problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")

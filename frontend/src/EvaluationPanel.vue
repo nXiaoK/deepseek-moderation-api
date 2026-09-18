@@ -954,6 +954,11 @@ onBeforeUnmount(() => {
                 required
             /></label>
           </div>
+          <p class="hint">
+            评测按通道 RPM 自动放慢：调用间隔至少为 60 ÷ RPM + 2 秒，例如 RPM 为
+            10 时至少间隔 8 秒。 首次调用不等待，RPM 为 0
+            时不额外等待；等待期间可取消，运行时限会相应延长。
+          </p>
           <fieldset>
             <legend>评测通道</legend>
             <label class="check-row"
