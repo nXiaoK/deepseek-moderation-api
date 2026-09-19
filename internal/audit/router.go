@@ -536,7 +536,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		bindings[b.ChannelID] = b
 	}
 	raw, _ := json.Marshal(p.Config)
-	candidates := []routeCandidate{}
+	candidates := make([]routeCandidate, 0, len(channels))
 	excludedPrice := false
 	excludedEmpty := false
 	for _, c := range channels {
@@ -556,25 +556,35 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		if err = cfg.Validate(); err != nil {
 			return Assessment{}, problem(400, "invalid_channel", err.Error())
 		}
-		if budget {
-			card, e := s.Store.ConnectionPrice(ctx, c.Model, c.CredentialID, time.Now())
-			if e != nil {
-				return Assessment{}, e
-			}
-			if card == nil || cfg.ImageCount > 0 {
-				excludedPrice = true
-				continue
-			}
-		}
-		key, e := s.Store.CredentialForConfig(ctx, cfg)
-		if e != nil {
-			if errorCode(e) == "credential_unavailable" {
-				continue
-			}
-			return Assessment{}, e
-		}
-		candidates = append(candidates, routeCandidate{channel: c, binding: b, cfg: cfg, key: key, signature: digest(c.CacheEpoch + key)})
+		candidates = append(candidates, routeCandidate{channel: c, binding: b, cfg: cfg})
 	}
+	resourceChannels := make([]ModelChannel, len(candidates))
+	for i := range candidates {
+		resourceChannels[i] = candidates[i].channel
+	}
+	credentials, prices, err := s.Store.routeResources(ctx, resourceChannels, budget, time.Now())
+	if err != nil {
+		return Assessment{}, err
+	}
+	available := candidates[:0]
+	for i := range candidates {
+		candidate := candidates[i]
+		credential, ok := credentials[candidate.channel.CredentialID]
+		if !ok {
+			continue
+		}
+		if credential.provider != candidate.cfg.ProviderID() || providerRoot(credential.baseURL) != providerRoot(candidate.cfg.BaseURL) {
+			return Assessment{}, problem(400, "credential_provider_mismatch", "凭证绑定的供应商或服务地址与策略不匹配")
+		}
+		if budget && (candidate.cfg.ImageCount > 0 || !prices[routePriceKey{canonicalPriceModel(candidate.channel.Model), candidate.channel.CredentialID}]) {
+			excludedPrice = true
+			continue
+		}
+		candidate.key = credential.key
+		candidate.signature = digest(candidate.channel.CacheEpoch + credential.key)
+		available = append(available, candidate)
+	}
+	candidates = available
 	if kind == "production" && p.Config.ResultCacheTTL > 0 {
 		s.Store.prepareRouteCacheKeys(client, p, candidates, input, images)
 		release, err := s.cacheLock(ctx, candidates)
