@@ -208,7 +208,7 @@ func TestTextOnlyChannelMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := createTestChannel(t, store, cred, "legacy", "deepseek-flash")
-	if _, err := store.DB.ExecContext(ctx, "ALTER TABLE audit_model_channels DROP COLUMN text_only"); err != nil {
+	if _, err := store.DB.ExecContext(ctx, "ALTER TABLE audit_model_channels DROP COLUMN text_only; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB.ExecContext(ctx, "DROP TABLE audit_schema_migrations"); err != nil {
