@@ -391,12 +391,14 @@ function clearSession() {
 }
 setUnauthorizedHandler(clearSession);
 onBeforeUnmount(() => setUnauthorizedHandler(null));
+function confirmPolicySwitch() {
+  return (
+    !dirty.value || window.confirm("切换策略会丢弃未保存的编辑，是否切换？")
+  );
+}
 async function selectPolicy(event: Event) {
   const id = (event.target as HTMLSelectElement).value;
-  if (
-    dirty.value &&
-    !window.confirm("切换策略会丢弃未保存的编辑，是否切换？")
-  ) {
+  if (!confirmPolicySwitch()) {
     (event.target as HTMLSelectElement).value = selected.value?.id || "";
     return;
   }
@@ -442,6 +444,7 @@ async function reloadChannels() {
   channels.value = await api("/admin/model-channels");
 }
 async function createPolicy() {
+  if (busy.value || !confirmPolicySwitch()) return;
   await run(async () => {
     const p = await api<Policy>("/admin/policies", "POST", {
       name: newName.value,
