@@ -278,11 +278,35 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	}
 	token := randomToken("ses_")
 	csrf := randomToken("csrf_")
-	if _, err = s.Store.DB.ExecContext(r.Context(), "INSERT INTO admin_sessions(token_hash,username,csrf,expires_at) VALUES($1,$2,$3,$4)", digest(token), input.Username, csrf, time.Now().Add(12*time.Hour)); err != nil {
+	if err = s.createAdminSession(r.Context(), input.Username, hash, token, csrf); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{Name: "audit_session", Value: token, Path: "/", HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
 	return writeJSON(w, 200, map[string]string{"username": input.Username, "csrf": csrf})
+}
+
+// Serialize session creation with password changes. Verification stays outside
+// the transaction, but its exact hash must still be current under the row lock.
+// A password update either wins first (rejecting this login), or waits for this
+// session to commit and then revokes it along with the user's other sessions.
+func (s *Server) createAdminSession(ctx context.Context, username, verifiedHash, token, csrf string) error {
+	tx, err := s.Store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var currentHash string
+	err = tx.QueryRowContext(ctx, "SELECT password_hash FROM admin_users WHERE username=$1 FOR SHARE", username).Scan(&currentHash)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && currentHash != verifiedHash) {
+		return problem(401, "invalid_login", "用户名或密码错误")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO admin_sessions(token_hash,username,csrf,expires_at) VALUES($1,$2,$3,$4)", digest(token), username, csrf, time.Now().Add(12*time.Hour)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) error {
 	v := r.Context().Value(sessionKey{}).(session)
