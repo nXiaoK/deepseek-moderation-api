@@ -203,17 +203,31 @@ server {
     server_name audit.example.com;
     client_max_body_size 1m;
 
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 45s;
+    proxy_send_timeout 45s;
+
+    # Image moderation and policy trials accept JSON bodies up to 32 MiB.
+    location = /v1/moderations {
+        client_max_body_size 32m;
+        proxy_pass http://127.0.0.1:8090;
+    }
+
+    location ~ ^/admin/policies/[^/]+/test$ {
+        client_max_body_size 32m;
+        proxy_pass http://127.0.0.1:8090;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8090;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 45s;
-        proxy_send_timeout 45s;
     }
 }
 ```
+
+正式审核和策略试跑单独允许 32 MiB 的 JSON 请求体（包含图片 Base64 编码开销）；其余接口保留 1 MiB 限制。后端仍独立校验：正式纯文本请求最多 1 MiB，含图审核和试跑最多 32 MiB。
 
 启用配置并申请证书：
 
