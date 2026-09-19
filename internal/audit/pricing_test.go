@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -27,6 +28,61 @@ func TestDeepSeekTariffBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestReserveCoversEveryValidInputTariff(t *testing.T) {
+	cfg := PolicyConfig{Prompt: "system", MaxTokens: 32}
+	input := "test input"
+	inputTokens := len(cfg.Prompt) + len(input) + 1024
+	off := parseTime(t, "2026-09-12T10:00:00+08:00")
+	peak := parseTime(t, "2026-09-14T10:00:00+08:00")
+	for _, tc := range []struct {
+		name  string
+		rates PriceRates
+	}{
+		{"off_peak_hit", PriceRates{OffHit: 1_000_000_000}},
+		{"peak_hit", PriceRates{PeakHit: 1_000_000_000}},
+		{"off_peak_miss", PriceRates{OffMiss: 1_000_000_000}},
+		{"peak_miss", PriceRates{PeakMiss: 1_000_000_000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			card := PriceCard{Rates: tc.rates}
+			if err := card.Rates.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			reserved, err := card.reserve(cfg, input)
+			if err != nil || reserved != int64(inputTokens)*1_000_000_000 {
+				t.Fatalf("highest input tariff not reserved: %d, %v", reserved, err)
+			}
+			for _, at := range []time.Time{off, peak} {
+				for _, hits := range []int{0, inputTokens / 2, inputTokens} {
+					u := Usage{Reported: true, PromptTokens: inputTokens, CacheHitTokens: intPtr(hits), CacheMissTokens: intPtr(inputTokens - hits)}
+					actual, _, _, err := card.calculate(u, at, at)
+					if err != nil || actual > reserved {
+						t.Fatalf("actual cost %d exceeds reserve %d: %v", actual, reserved, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCachedInputPriceCannotBypassZeroBudget(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	p, key := configureBillingPolicy(t, store, 0)
+	cfg := testInference(t, store, p)
+	raw, _ := json.Marshal(PriceRates{OffHit: 1_000_000_000, PeakHit: 1_000_000_000})
+	if _, err := store.DB.Exec("INSERT INTO model_prices(model,rates,source,author) VALUES($1,$2,'regression tariff','admin')", cfg.Model, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec("INSERT INTO client_budgets(client_id,daily_limit,monthly_limit) VALUES($1,0,0)", key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReserveCost(ctx, randomToken("cost_"), key.ID, "production", p, cfg, "priced cache hits", false, time.Now()); errorCode(err) != "budget_exceeded" {
+		t.Fatal("nonzero cached-token tariff bypassed zero budget", err)
+	}
+}
+
 func TestExactCacheAwareCostAndMissingUsage(t *testing.T) {
 	c := flashCard()
 	start := parseTime(t, "2026-09-12T10:00:00+08:00")

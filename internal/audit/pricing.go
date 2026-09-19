@@ -136,7 +136,8 @@ func (c PriceCard) reserve(cfg PolicyConfig, text string) (int64, error) {
 	// Conservative byte-based token allowance, including the fixed prompt,
 	// user wrapper and a framing allowance. This is not an official tokenizer.
 	input := len([]byte(cfg.Prompt)) + len([]byte(text)) + 1024
-	return safeCost(0, input, cfg.MaxTokens, 0, max(c.Rates.PeakMiss, c.Rates.OffMiss), max(c.Rates.PeakOutput, c.Rates.OffOutput))
+	inputRate := max(c.Rates.PeakHit, c.Rates.OffHit, c.Rates.PeakMiss, c.Rates.OffMiss)
+	return safeCost(0, input, cfg.MaxTokens, 0, inputRate, max(c.Rates.PeakOutput, c.Rates.OffOutput))
 }
 func (c PriceCard) calculate(u Usage, start, end time.Time) (int64, string, string, error) {
 	if !u.Reported {
