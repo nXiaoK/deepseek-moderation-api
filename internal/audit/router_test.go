@@ -123,7 +123,7 @@ func TestRouterConcurrentReservationAndStaleCompletion(t *testing.T) {
 }
 func TestRouterHTTPClassification(t *testing.T) {
 	for _, code := range []int{401, 403, 400, 404, 429, 500} {
-		err := classifyUpstream(&http.Response{StatusCode: code, Header: http.Header{"Retry-After": []string{"123"}}})
+		err := classifyUpstream(&http.Response{StatusCode: code, Header: http.Header{"Retry-After": []string{"123"}}}, "")
 		var e *upstreamFailure
 		if !errors.As(err, &e) || !retryable(err) {
 			t.Fatal(err)

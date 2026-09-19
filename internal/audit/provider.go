@@ -145,7 +145,7 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, "", classifyUpstream(res)
+		return Assessment{}, attempt, "", classifyUpstream(res, key)
 	}
 	content, env, err := readGrokResponse(res)
 	usage := parseGrokUsage(env.Usage)

@@ -57,7 +57,7 @@ type upstreamFailure struct {
 }
 
 func (e *upstreamFailure) Unwrap() error { return e.APIError }
-func classifyUpstream(res *http.Response) error {
+func classifyUpstream(res *http.Response, credential string) error {
 	e := &upstreamFailure{APIError: &APIError{503, "upstream_unavailable", "模型请求失败"}}
 	switch {
 	case res.StatusCode == 429:
@@ -79,7 +79,7 @@ func classifyUpstream(res *http.Response) error {
 		e.Code = "upstream_config_invalid"
 		e.Message = "模型名称或参数不受支持，请检查通道配置"
 	}
-	if detail := upstreamErrorDetail(res); detail != "" {
+	if detail := upstreamErrorDetail(res, credential); detail != "" {
 		e.Message += fmt.Sprintf("（HTTP %d：%s）", res.StatusCode, detail)
 	}
 	return e
@@ -87,7 +87,7 @@ func classifyUpstream(res *http.Response) error {
 
 // Only retain the structured error message, never a raw response or HTML page.
 // Upstreams may echo credentials in errors; redact before returning or storing.
-func upstreamErrorDetail(res *http.Response) string {
+func upstreamErrorDetail(res *http.Response, credential string) string {
 	if res.Body == nil {
 		return ""
 	}
@@ -107,6 +107,11 @@ func upstreamErrorDetail(res *http.Response) string {
 	message := payload.Error.Message
 	if message == "" {
 		message = payload.Detail
+	}
+	// Scrub the actual credential before generic redaction, normalization or
+	// truncation: providers and gateways accept keys with arbitrary formats.
+	if credential != "" {
+		message = strings.ReplaceAll(message, credential, "[隐去]")
 	}
 	message = strings.Join(strings.Fields(storedModelOutput(message)), " ")
 	if utf8.RuneCountInString(message) > 512 {

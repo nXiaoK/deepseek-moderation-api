@@ -90,7 +90,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Assessment{}, attempt, "", classifyUpstream(res)
+		return Assessment{}, attempt, "", classifyUpstream(res, key)
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 65537))
 	if err != nil {

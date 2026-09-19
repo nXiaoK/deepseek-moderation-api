@@ -24,8 +24,8 @@ func TestConfiguredChannelCooldownAndRecovery(t *testing.T) {
 		problem(503, "upstream_unavailable", "failed"),
 		problem(504, "upstream_timeout", "timeout"),
 		problem(502, "invalid_model_response", "invalid"),
-		classifyUpstream(&http.Response{StatusCode: 401}),
-		classifyUpstream(&http.Response{StatusCode: 400}),
+		classifyUpstream(&http.Response{StatusCode: 401}, ""),
+		classifyUpstream(&http.Response{StatusCode: 400}, ""),
 	} {
 		t.Run(errorCode(failure), func(t *testing.T) {
 			e := NewEngine(8)
@@ -59,8 +59,8 @@ func TestConfiguredChannelCooldownAndRecovery(t *testing.T) {
 func TestSingleChannelAlwaysRetriesAndRetainsCapacityLimit(t *testing.T) {
 	for _, failure := range []error{
 		problem(503, "upstream_unavailable", "failed"),
-		classifyUpstream(&http.Response{StatusCode: 403}),
-		classifyUpstream(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {"3600"}}}),
+		classifyUpstream(&http.Response{StatusCode: 403}, ""),
+		classifyUpstream(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {"3600"}}}, ""),
 	} {
 		t.Run(errorCode(failure), func(t *testing.T) {
 			e := NewEngine(8)
@@ -129,7 +129,7 @@ func TestRateLimitAndConfiguredCooldownUseLongerDelay(t *testing.T) {
 		cfg := DefaultSettings()
 		cfg.FailureThreshold = 1
 		cs := []routeCandidate{candidate("primary", 1, 1), candidate("backup", 2, 1)}
-		failure := classifyUpstream(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {tc.retryAfter}}})
+		failure := classifyUpstream(&http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {tc.retryAfter}}}, "")
 		acquireForTest(t, e, cs, cfg, time.Now(), "primary")(failure, true)
 		if remaining := time.Until(e.channelHealth("primary").CooldownUntil); remaining < tc.want-time.Second || remaining > tc.want {
 			t.Fatalf("cooldown = %s, want %s", remaining, tc.want)
