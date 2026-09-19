@@ -117,14 +117,20 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 	defer tx.Rollback()
 	date := at.In(shanghai).Format("2006-01-02")
 	month := at.In(shanghai).Format("2006-01") + "-01"
-	if kind == "production" && !cached {
-		var active bool
-		if err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>NOW()) FROM client_api_keys WHERE id=$1 FOR UPDATE", client).Scan(&active); err != nil {
-			return nil, err
-		}
-		if !active {
+	if kind == "production" {
+		var active, allowed bool
+		err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>NOW()),policy_ids ? $2 FROM client_api_keys WHERE id=$1 FOR UPDATE", client, p.ID).Scan(&active, &allowed)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
 			return nil, problem(401, "invalid_api_key", "访问密钥已停用或过期")
 		}
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, problem(403, "policy_forbidden", "该密钥无权调用此策略")
+		}
+	}
+	if kind == "production" && !cached {
 		var dayLimit, monthLimit sql.NullInt64
 		err = tx.QueryRowContext(ctx, "SELECT daily_limit,monthly_limit FROM client_budgets WHERE client_id=$1", client).Scan(&dayLimit, &monthLimit)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
