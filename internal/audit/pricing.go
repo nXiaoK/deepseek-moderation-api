@@ -149,7 +149,7 @@ func (c PriceCard) calculate(u Usage, start, end time.Time) (int64, string, stri
 		hit, miss = *u.CacheHitTokens, *u.CacheMissTokens
 	} else {
 		status = "estimated"
-		note = "未返回缓存拆分，按全部输入未命中估算"
+		note = "未返回缓存拆分，按较高输入单价估算"
 	}
 	h, m, o := c.Rates.values(pricePeriod(start))
 	if pricePeriod(start) != pricePeriod(end) {
@@ -158,6 +158,9 @@ func (c PriceCard) calculate(u Usage, start, end time.Time) (int64, string, stri
 		o = max(c.Rates.PeakOutput, c.Rates.OffOutput)
 		status = "estimated"
 		note = "请求跨计费时段，按较高单价估算，待账单核对"
+	}
+	if u.CacheHitTokens == nil || u.CacheMissTokens == nil {
+		m = max(h, m)
 	}
 	amount, err := safeCost(hit, miss, u.CompletionTokens, h, m, o)
 	return amount, status, note, err

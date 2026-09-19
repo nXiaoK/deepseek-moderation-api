@@ -83,6 +83,26 @@ func TestCachedInputPriceCannotBypassZeroBudget(t *testing.T) {
 	}
 }
 
+func TestMissingCacheSplitUsesHighestApplicableInputRate(t *testing.T) {
+	card := PriceCard{Rates: PriceRates{OffHit: 3_000_000, OffMiss: 1_000_000, PeakHit: 7_000_000, PeakMiss: 2_000_000}}
+	usage := Usage{Reported: true, PromptTokens: 1000}
+	for _, tc := range []struct {
+		name, start, end string
+		want             int64
+	}{
+		{"off_peak", "2026-09-12T10:00:00+08:00", "2026-09-12T10:00:01+08:00", 3_000_000_000},
+		{"peak", "2026-09-14T10:00:00+08:00", "2026-09-14T10:00:01+08:00", 7_000_000_000},
+		{"boundary", "2026-09-14T08:59:59+08:00", "2026-09-14T09:00:01+08:00", 7_000_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			amount, status, _, err := card.calculate(usage, parseTime(t, tc.start), parseTime(t, tc.end))
+			if err != nil || status != "estimated" || amount != tc.want {
+				t.Fatalf("unknown cache split cost=%d, status=%s, want %d: %v", amount, status, tc.want, err)
+			}
+		})
+	}
+}
+
 func TestExactCacheAwareCostAndMissingUsage(t *testing.T) {
 	c := flashCard()
 	start := parseTime(t, "2026-09-12T10:00:00+08:00")
