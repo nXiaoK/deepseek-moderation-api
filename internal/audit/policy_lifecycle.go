@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -124,7 +123,7 @@ func (s *Server) importPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := readJSON(w, r, &in); err != nil {
 		return err
 	}
-	if in.SchemaVersion != 1 || strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`).MatchString(in.Alias) {
+	if in.SchemaVersion != 1 || strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || !policyAliasPattern.MatchString(in.Alias) {
 		return problem(400, "invalid_policy", "配置版本、名称或模型别名无效")
 	}
 	if in.Config.StoreModelOutput == nil {

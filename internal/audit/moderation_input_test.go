@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestModerationImageTextExtraction(t *testing.T) {
+func TestModerationMultimodalInputParsing(t *testing.T) {
 	// An 800 KiB file already exceeds 1 MiB when encoded for sub2api.
 	image := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 800*1024))
 	mixed := func(text, image string) string {
@@ -22,16 +22,17 @@ func TestModerationImageTextExtraction(t *testing.T) {
 	base := mixed("inspect screenshot", "https://example.com/image.png")
 	for _, tt := range []struct {
 		name, body, wantText, wantCode string
-		wantFallback                   bool
+		wantImage                      bool
 	}{
 		{"base64_800KiB", mixed("inspect screenshot", image), "inspect screenshot\n", "", true},
 		{"small_image_url", base, "inspect screenshot\n", "", true},
 		{"exact_limit", base + strings.Repeat(" ", moderationTextBodyLimit-len(base)), "inspect screenshot\n", "", true},
 		{"above_limit", base + strings.Repeat(" ", moderationTextBodyLimit-len(base)+1), "inspect screenshot\n", "", true},
-		{"empty_text", mixed(" ", image), "", "empty_input", true},
+		{"image_with_empty_text", mixed(" ", image), " \n", "", true},
 		{"long_text", mixed(strings.Repeat("审", 64001), image), "", "input_too_large", true},
 		{"max_text", mixed(strings.Repeat("审", 63999), image), strings.Repeat("审", 63999) + "\n", "", true},
 		{"text_only", `{"model":"abuse-audit-v1","input":"hello"}`, "hello", "", false},
+		{"empty_text", `{"model":"abuse-audit-v1","input":" "}`, "", "empty_input", false},
 		{"oversized_text", `{"model":"abuse-audit-v1","input":"` + strings.Repeat("a", moderationTextBodyLimit) + `"}`, "", "body_too_large", false},
 		{"hard_cap", strings.Repeat(" ", moderationImageBodyLimit+1), "", "body_too_large", false},
 		{"duplicate_key", strings.Replace(mixed("hello", image), `"model":`, `"model":"other","model":`, 1), "", "invalid_json", false},
@@ -41,10 +42,11 @@ func TestModerationImageTextExtraction(t *testing.T) {
 			r := httptest.NewRequest("POST", "/v1/moderations", strings.NewReader(tt.body))
 			// Also covers chunked requests: trust bytes read, not Content-Length.
 			r.ContentLength = -1
-			in, fallback, err := readModerationRequest(httptest.NewRecorder(), r)
+			in, hasImage, err := readModerationRequest(httptest.NewRecorder(), r)
 			var text string
+			var images []AuditImage
 			if err == nil {
-				text, err = parseModerationText(in.Input, fallback)
+				text, images, err = parseModerationInput(in.Input)
 			}
 			if tt.wantCode != "" {
 				if err == nil || errorCode(err) != tt.wantCode {
@@ -52,14 +54,14 @@ func TestModerationImageTextExtraction(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || fallback != tt.wantFallback || text != tt.wantText || in.Model != "abuse-audit-v1" {
-				t.Fatalf("unexpected result: fallback=%v, text length=%d, error=%v", fallback, len(text), err)
+			if err != nil || hasImage != tt.wantImage || (len(images) > 0) != tt.wantImage || text != tt.wantText || in.Model != "abuse-audit-v1" {
+				t.Fatalf("unexpected result: hasImage=%v, parsed images=%d, text length=%d, error=%v", hasImage, len(images), len(text), err)
 			}
 		})
 	}
 }
 
-func TestTextFallbackRejectsUnsupportedAndMalformedBlocks(t *testing.T) {
+func TestModerationInputRejectsUnsupportedAndMalformedBlocks(t *testing.T) {
 	for _, raw := range []string{
 		`[{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]`,
 		`[{"type":"text","text":"hello"},{"type":"audio","data":"abc"}]`,
@@ -68,7 +70,7 @@ func TestTextFallbackRejectsUnsupportedAndMalformedBlocks(t *testing.T) {
 		`[{"type":"text","text":"hello","extra":"ignored?"}]`,
 		`[{"type":"text","text":null}]`,
 	} {
-		if _, err := parseModerationText(json.RawMessage(raw), true); err == nil {
+		if _, _, err := parseModerationInput(json.RawMessage(raw)); err == nil {
 			t.Fatalf("accepted unsupported input: %s", raw)
 		}
 	}

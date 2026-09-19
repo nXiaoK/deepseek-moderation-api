@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"errors"
 	"math"
 	"regexp"
@@ -9,6 +8,9 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`)
+var policyAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`)
 
 type PolicyConfig struct {
 	TextOnly           bool    `json:"text_only,omitempty"`
@@ -37,7 +39,7 @@ func (c PolicyConfig) Validate() error {
 	if math.IsNaN(c.Threshold) || math.IsInf(c.Threshold, 0) || c.Threshold < 0 || c.Threshold > 1 {
 		return errors.New("阈值必须在 0～1 之间")
 	}
-	if !regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`).MatchString(c.Model) {
+	if !modelNamePattern.MatchString(c.Model) {
 		return errors.New("模型名称无效")
 	}
 	if err := validateProviderURL(c.ProviderID(), c.BaseURL); err != nil {
@@ -325,27 +327,6 @@ func problem(status int, code, message string) error { return &APIError{status, 
 var ErrConflict = &APIError{409, "revision_conflict", "配置已被更新，请重新加载后保存"}
 var ErrNotFound = &APIError{404, "not_found", "记录不存在"}
 
-func parseText(raw json.RawMessage) (string, error) {
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		return validateText(text)
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if len(raw) == 0 || raw[0] != '[' || strictJSON(raw, &parts) != nil || len(parts) == 0 {
-		return "", problem(400, "invalid_input", "input 必须为文本或文本内容块数组")
-	}
-	var chunks []string
-	for _, part := range parts {
-		if part.Type != "text" {
-			return "", problem(400, "unsupported_input", "当前策略只支持文本审核，不能忽略图片或其他内容")
-		}
-		chunks = append(chunks, part.Text)
-	}
-	return validateText(strings.Join(chunks, "\n"))
-}
 func validateText(s string) (string, error) {
 	if strings.TrimSpace(s) == "" {
 		return "", problem(400, "empty_input", "审核文本不能为空")

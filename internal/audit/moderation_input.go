@@ -138,20 +138,6 @@ func validAuditImage(image AuditImage) bool {
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Hostname() != "" && u.User == nil
 }
 
-func parseModerationText(raw json.RawMessage, textOnlyFallback bool) (string, error) {
-	if !textOnlyFallback {
-		return parseText(raw)
-	}
-	text, _, err := parseModerationInput(raw)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(text) == "" {
-		return "", problem(400, "empty_input", "跳过图片后没有可审核文本")
-	}
-	return text, nil
-}
-
 func auditInputScope(textOnly bool, images []AuditImage) string {
 	if len(images) == 0 {
 		return "text"
