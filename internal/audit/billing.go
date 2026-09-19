@@ -103,6 +103,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		return nil, err
 	}
 	reserved := int64(0)
+	reservationValid := cached || card != nil && cfg.ImageCount == 0
 	if card != nil && !cached && cfg.ImageCount == 0 {
 		reserved, err = card.reserve(cfg, text)
 		if err != nil {
@@ -145,7 +146,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 			}
 			var dayUsed, monthUsed int64
 			var unknown int
-			err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE(amount_pico,reserved_pico)) FILTER(WHERE budget_date=$2::date),0),COALESCE(SUM(COALESCE(amount_pico,reserved_pico)),0),COUNT(*) FILTER(WHERE amount_pico IS NULL AND price_id IS NULL) FROM audit_costs WHERE client_id=$1 AND kind='production' AND budget_date >= $3::date AND budget_date < $3::date+INTERVAL '1 month'`, client, date, month).Scan(&dayUsed, &monthUsed, &unknown)
+			err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE(amount_pico,reserved_pico)) FILTER(WHERE budget_date=$2::date),0),COALESCE(SUM(COALESCE(amount_pico,reserved_pico)),0),COUNT(*) FILTER(WHERE amount_pico IS NULL AND NOT reservation_valid) FROM audit_costs WHERE client_id=$1 AND kind='production' AND budget_date >= $3::date AND budget_date < $3::date+INTERVAL '1 month'`, client, date, month).Scan(&dayUsed, &monthUsed, &unknown)
 			if err != nil {
 				return nil, err
 			}
@@ -168,7 +169,7 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 		status = "local_cache"
 		amount = int64(0)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider,channel_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, client, kind, p.ID, requestID, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, card, at), cfg.ProviderID(), channelID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_costs(id,client_id,kind,policy_id,request_id,model,price_id,price_snapshot,started_at,budget_date,reserved_pico,amount_pico,status,tariff_period,provider,channel_id,reservation_valid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, id, client, kind, p.ID, requestID, cfg.Model, priceID, string(snapshot), at, date, reserved, amount, status, providerTariff(cfg, card, at), cfg.ProviderID(), channelID, reservationValid)
 	if err != nil {
 		return nil, err
 	}
