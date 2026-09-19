@@ -1,6 +1,6 @@
 -- A price snapshot alone does not mean the request had an estimate: image
 -- requests historically stored a zero reservation even with a nonzero tariff.
-ALTER TABLE audit_costs ADD COLUMN reservation_valid BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE audit_costs ADD COLUMN IF NOT EXISTS reservation_valid BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Preserve existing text reservations, including genuinely free tariffs.
 -- Zero reservations without a provably free price remain unknown even after

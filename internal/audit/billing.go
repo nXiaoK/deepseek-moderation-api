@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -120,8 +119,11 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 	month := at.In(shanghai).Format("2006-01") + "-01"
 	if kind == "production" {
 		var active, allowed bool
-		err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>NOW()),policy_ids ? $2 FROM client_api_keys WHERE id=$1 FOR UPDATE", client, p.ID).Scan(&active, &allowed)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
+		var expires sql.NullTime
+		err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL,expires_at,policy_ids ? $2 FROM client_api_keys WHERE id=$1 FOR UPDATE", client, p.ID).Scan(&active, &expires, &allowed)
+		// PostgreSQL NOW() is fixed at transaction start, which can precede a
+		// wait on this key's budget lock. Check expiry only after acquiring it.
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (!active || expires.Valid && !expires.Time.After(time.Now())) {
 			return nil, problem(401, "invalid_api_key", "访问密钥已停用或过期")
 		}
 		if err != nil {
@@ -375,7 +377,7 @@ func (s *Server) savePrice(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	in.Model = canonicalPriceModel(in.Model)
-	if !regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`).MatchString(in.Model) || len(in.Source) > 500 || strings.TrimSpace(in.Source) == "" {
+	if !modelNamePattern.MatchString(in.Model) || len(in.Source) > 500 || strings.TrimSpace(in.Source) == "" {
 		return problem(400, "invalid_price", "请输入模型名称和价格来源")
 	}
 	rates := PriceRates{}
