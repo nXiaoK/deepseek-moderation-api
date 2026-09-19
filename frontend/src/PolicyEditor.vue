@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import AppIcon from "./AppIcon.vue";
 import {
   api,
+  encodeJSONBody,
   ignoreAPIError,
   type Config,
   type Policy,
@@ -132,7 +133,7 @@ async function test() {
   result.value = null;
   testError.value = "";
   try {
-    const body = {
+    const body = encodeJSONBody({
       input: images.value.length
         ? [
             ...(input.value ? [{ type: "text", text: input.value }] : []),
@@ -144,12 +145,8 @@ async function test() {
         : input.value,
       config: config.value,
       channel_id: selectedChannel.value,
-    };
-    if (
-      new TextEncoder().encode(JSON.stringify(body)).byteLength >
-      32 * 1024 * 1024
-    )
-      throw new Error("试跑请求体最多 32 MiB");
+    });
+    if (body.size > 32 * 1024 * 1024) throw new Error("试跑请求体最多 32 MiB");
     result.value = await api<AuditResponse>(
       `/admin/policies/${props.policy.id}/test`,
       "POST",

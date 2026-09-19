@@ -210,6 +210,9 @@ export function ignoreAPIError(error: unknown) {
     (error instanceof DOMException && error.name === "AbortError")
   );
 }
+export function encodeJSONBody(value: unknown) {
+  return new Blob([JSON.stringify(value)], { type: "application/json" });
+}
 export async function api<T>(
   path: string,
   method = "GET",
@@ -225,7 +228,12 @@ export async function api<T>(
       "Content-Type": "application/json",
       ...(requestCSRF ? { "X-CSRF-Token": requestCSRF } : {}),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:
+      body instanceof Blob
+        ? body
+        : body === undefined
+          ? undefined
+          : JSON.stringify(body),
   });
   let data;
   try {
