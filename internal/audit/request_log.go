@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -35,6 +36,21 @@ type requestAudit struct {
 
 func (s *Server) auditModeration(next endpoint) endpoint {
 	return func(w http.ResponseWriter, r *http.Request) (err error) {
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		releaseIngress, err := s.ingress.acquire(ip, time.Now())
+		if err != nil {
+			s.ingress.recordRejection(time.Now())
+			return err
+		}
+		defer releaseIngress()
+		releaseBody, err := s.admission.acquire(r.ContentLength, moderationImageBodyLimit)
+		if err != nil {
+			s.ingress.recordRejection(time.Now())
+			return err
+		}
+		defer releaseBody()
+		// Admission covers authentication and the final audit write. Requests
+		// rejected above never touch the database or allocate audit metadata.
 		a := &requestAudit{days: DefaultSettings().RetentionDays, log: AuditLog{
 			ID: randomToken("audit_"), Kind: "production", CreatedAt: time.Now().UTC(),
 			Attempts: []AuditAttempt{}, Usage: Usage{Reported: true},

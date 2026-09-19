@@ -32,6 +32,7 @@ type Server struct {
 	dummyPassword     string
 	Runtime           RuntimeConfig
 	admission         requestAdmission
+	ingress           ingressGuard
 	trialSlots        chan struct{}
 	backgroundContext context.Context
 	stopBackground    context.CancelFunc
@@ -70,7 +71,7 @@ func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*
 		return nil, err
 	}
 	background, stop := context.WithCancel(context.Background())
-	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop, startedAt: time.Now()}, nil
+	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, ingress: ingressGuard{limits: ingressLimits{config.IngressRPM, config.IngressIPRPM, config.RequestConcurrency, min(8, config.RequestConcurrency), 4096}}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop, startedAt: time.Now()}, nil
 }
 func (s *Server) Close() {
 	s.evaluationMu.Lock()
@@ -543,11 +544,6 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) error {
 		return problem(429, "rate_limited", "调用额度已达上限")
 	}
 	a.log.Request.Stage = "request_validation"
-	release, err := s.admission.acquire(r.ContentLength, moderationImageBodyLimit)
-	if err != nil {
-		return err
-	}
-	defer release()
 	in, _, err := readModerationRequest(w, r)
 	if err != nil {
 		return err
