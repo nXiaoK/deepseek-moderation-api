@@ -49,6 +49,7 @@ type routeCandidate struct {
 	binding        ChannelBinding
 	cfg            PolicyConfig
 	key, signature string
+	cacheKey       string
 	attemptAt      time.Time // Set by the request owner immediately before inference.
 }
 type upstreamFailure struct {
@@ -575,7 +576,8 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		candidates = append(candidates, routeCandidate{channel: c, binding: b, cfg: cfg, key: key, signature: digest(c.CacheEpoch + key)})
 	}
 	if kind == "production" && p.Config.ResultCacheTTL > 0 {
-		release, err := s.cacheLock(ctx, p, candidates, client, input, images)
+		s.Store.prepareRouteCacheKeys(client, p, candidates, input, images)
+		release, err := s.cacheLock(ctx, candidates)
 		if err != nil {
 			return Assessment{}, err
 		}
@@ -633,34 +635,13 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		scope := auditInputScope(c.channel.TextOnly, images)
 		attempt := AuditAttempt{InputScope: scope, ImageCount: len(attemptImages), ID: randomToken("cost_"), ChannelID: c.channel.ID, ChannelName: c.channel.Name, Provider: c.channel.Provider, Model: c.channel.Model}
 		at := time.Now()
-		assessment := Assessment{}
-		cacheKey := ""
-		cached := false
-		cachedModel := ""
-		if kind == "production" && c.cfg.ResultCacheTTL > 0 && imageInputCacheable(attemptImages) {
-			cacheKey = s.Store.assessmentCacheKey(client, p, c.cfg, int(p.Revision), key, input, attemptImages...)
-			value, cacheErr := s.Store.CachedAssessment(ctx, cacheKey)
-			if cacheErr != nil {
-				release(cacheErr, false)
-				return Assessment{}, problem(503, "cache_unavailable", "审核缓存暂时不可用")
-			}
-			if value != nil {
-				assessment = value.Assessment
-				cachedModel = value.ActualModel
-				cached = true
-			}
-		}
-		entry, e := s.Store.ReserveCost(ctx, attempt.ID, client, kind, p, c.cfg, input, cached, at, response.ID, c.channel.ID)
+		entry, e := s.Store.ReserveCost(ctx, attempt.ID, client, kind, p, c.cfg, input, false, at, response.ID, c.channel.ID)
 		if e != nil {
 			release(e, false)
 			return Assessment{}, e
 		}
-		usage := Usage{Reported: true, ActualModel: cachedModel}
-		output := ""
-		if !cached {
-			c.attemptAt = time.Now()
-			assessment, usage, output, e = s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
-		}
+		c.attemptAt = time.Now()
+		assessment, usage, output, e := s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
 		if pacer, ok := ctx.Value(evaluationPacingKey{}).(evaluationPacer); ok && usage.Attempted {
 			pacer[c.channel.ID] = c.attemptAt
 		}
@@ -682,7 +663,6 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		response.Usage.ActualModel = usage.ActualModel
 		response.Usage.UpstreamRequestID = usage.UpstreamRequestID
 		attempt.Sent = usage.Attempted
-		attempt.CacheHit = cached
 		attempt.Usage = usage
 		attempt.LatencyMS = time.Since(at).Milliseconds()
 		if e != nil {
@@ -718,14 +698,10 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		if usage.ActualModel != "" {
 			response.ActualModel = usage.ActualModel
 		}
-		response.CacheHit = cached
 		response.Usage.ActualModel = response.ActualModel
 		response.Usage.UpstreamRequestID = usage.UpstreamRequestID
-		if !cached {
-			log.ModelOutput = storedModelOutput(output)
-		}
-		if !cached && cacheKey != "" {
-			_ = s.Store.CacheAssessment(ctx, cacheKey, assessment, c.cfg.ResultCacheTTL, response.ActualModel)
+		if c.cacheKey != "" {
+			_ = s.Store.CacheAssessment(ctx, c.cacheKey, assessment, c.cfg.ResultCacheTTL, response.ActualModel)
 		}
 		return assessment, nil
 	}

@@ -16,16 +16,33 @@ func cacheImages(c routeCandidate, images []AuditImage) []AuditImage {
 	}
 	return images
 }
-func (s *Store) routeCacheKey(client string, p Policy, c routeCandidate, input string, images []AuditImage) string {
-	return s.assessmentCacheKey(client, p, c.cfg, int(p.Revision), c.key, input, cacheImages(c, images)...)
+func (s *Store) prepareRouteCacheKeys(client string, p Policy, candidates []routeCandidate, input string, images []AuditImage) {
+	promptDigest := digest(p.Config.Prompt)
+	textDigest := s.cacheInputDigest(input, nil)
+	imageDigest := textDigest
+	cacheableImages := imageInputCacheable(images)
+	if len(images) > 0 && cacheableImages {
+		imageDigest = s.cacheInputDigest(input, images)
+	}
+	for i := range candidates {
+		c := &candidates[i]
+		if !c.channel.TextOnly && !cacheableImages {
+			continue
+		}
+		inputDigest := imageDigest
+		if c.channel.TextOnly {
+			inputDigest = textDigest
+		}
+		c.cacheKey = s.assessmentCacheKeyFromInput(client, p.ID, c.cfg, int(p.Revision), c.key, inputDigest, promptDigest)
+	}
 }
-func (s *Server) cacheLock(ctx context.Context, p Policy, candidates []routeCandidate, client, input string, images []AuditImage) (func(), error) {
+func (s *Server) cacheLock(ctx context.Context, candidates []routeCandidate) (func(), error) {
 	keys := make([]string, 0, len(candidates))
 	for _, c := range candidates {
-		if !imageInputCacheable(cacheImages(c, images)) {
+		if c.cacheKey == "" {
 			return func() {}, nil
 		}
-		keys = append(keys, s.Store.routeCacheKey(client, p, c, input, images))
+		keys = append(keys, c.cacheKey)
 	}
 	if len(keys) == 0 {
 		return func() {}, nil
@@ -37,6 +54,16 @@ func (s *Server) cacheLock(ctx context.Context, p Policy, candidates []routeCand
 // Cache selection observes configured priority/weight, but does not consume
 // upstream capacity or change the channel's circuit-breaker state.
 func (s *Server) cachedRoute(ctx context.Context, p Policy, candidates []routeCandidate, client, input string, response *Response, log *AuditLog, images []AuditImage) (Assessment, bool, error) {
+	keys := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c.cacheKey != "" {
+			keys = append(keys, c.cacheKey)
+		}
+	}
+	values, err := s.Store.cachedAssessments(ctx, keys)
+	if err != nil {
+		return Assessment{}, false, problem(503, "cache_unavailable", "审核缓存暂时不可用")
+	}
 	remaining := slices.Clone(candidates)
 	for len(remaining) > 0 {
 		priority, weight := 101, 0
@@ -62,18 +89,12 @@ func (s *Server) cachedRoute(ctx context.Context, p Policy, candidates []routeCa
 		}
 		c := remaining[index]
 		remaining = append(remaining[:index], remaining[index+1:]...)
-		if !imageInputCacheable(cacheImages(c, images)) {
-			continue
-		}
-		value, err := s.Store.CachedAssessment(ctx, s.Store.routeCacheKey(client, p, c, input, images))
-		if err != nil {
-			return Assessment{}, false, problem(503, "cache_unavailable", "审核缓存暂时不可用")
-		}
+		value := values[c.cacheKey]
 		if value == nil {
 			continue
 		}
 		var active bool
-		err = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND p.enabled AND EXISTS(SELECT 1 FROM client_api_keys a WHERE a.id=$5 AND a.active AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>NOW()) AND a.policy_ids ? p.id) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$3 AND c.credential_id=$4`, c.channel.ID, p.ID, c.channel.Revision, c.channel.CredentialID, client).Scan(&active)
+		err = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND p.enabled AND NOT p.archived FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$3 AND c.credential_id=$4`, c.channel.ID, p.ID, c.channel.Revision, c.channel.CredentialID).Scan(&active)
 		if errors.Is(err, sql.ErrNoRows) || err == nil && !active {
 			continue
 		}
