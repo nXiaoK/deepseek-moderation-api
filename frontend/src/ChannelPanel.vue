@@ -5,8 +5,9 @@ import { api, ignoreAPIError, type ModelChannel, type Credential } from "./api";
 const props = defineProps<{
   channels: ModelChannel[];
   credentials: Credential[];
+  reload: () => Promise<void>;
 }>();
-const emit = defineEmits<{ changed: []; credentials: []; error: [string] }>();
+const emit = defineEmits<{ credentials: []; error: [string] }>();
 const empty = () => ({
   id: "",
   name: "",
@@ -64,9 +65,9 @@ async function work(fn: () => Promise<void>) {
   if (busy.value) return;
   busy.value = true;
   notice.value = "";
+  emit("error", "");
   try {
     await fn();
-    emit("changed");
   } catch (e) {
     if (ignoreAPIError(e)) return;
     emit("error", e instanceof Error ? e.message : "操作失败");
@@ -84,6 +85,7 @@ async function save() {
     );
     form.value = empty();
     notice.value = "模型通道已保存。前往审核策略绑定通道并试跑。";
+    await props.reload();
   });
 }
 async function clear(c: ModelChannel) {
@@ -91,6 +93,7 @@ async function clear(c: ModelChannel) {
     await api(`/admin/model-channels/${c.id}/cache/clear`, "POST", {});
     if (form.value.id === c.id) form.value = empty();
     notice.value = "结果缓存已失效，连接健康状态已重置。";
+    await props.reload();
   });
 }
 async function remove(c: ModelChannel) {
@@ -98,6 +101,7 @@ async function remove(c: ModelChannel) {
     await api(`/admin/model-channels/${c.id}`, "DELETE");
     if (form.value.id === c.id) form.value = empty();
     notice.value = "模型通道已删除。";
+    await props.reload();
   });
 }
 </script>
@@ -116,7 +120,7 @@ async function remove(c: ModelChannel) {
           class="icon-button"
           title="刷新状态"
           aria-label="刷新状态"
-          @click="emit('changed')"
+          @click="work(reload)"
           :disabled="busy"
         >
           <AppIcon name="refresh" :size="16" /></button

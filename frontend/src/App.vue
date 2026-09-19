@@ -948,7 +948,7 @@ window.addEventListener("beforeunload", (e) => {
           v-if="page === 'channels'"
           :channels="channels"
           :credentials="credentials"
-          @changed="reloadChannels"
+          :reload="reloadChannels"
           @credentials="navigate('credentials')"
           @error="error = $event"
         />
