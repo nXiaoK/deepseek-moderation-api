@@ -7,6 +7,41 @@ import (
 	"testing"
 )
 
+func TestPolicyChangeSummaryRecordsClearedFields(t *testing.T) {
+	before := DefaultSettings()
+	before.IgnoreKeywords = []string{"trusted marker"}
+	after := before
+	after.IgnoreKeywords = nil
+	changes := policyChangeSummary(before, after)
+	if value, exists := changes["ignore_keywords"]; !exists || value != nil {
+		t.Fatalf("cleared keywords missing from summary: %#v", changes)
+	}
+	if len(policyChangeSummary(after, after)) != 0 {
+		t.Fatal("unchanged optional fields must not produce changes")
+	}
+	store := testStore(t)
+	ctx := context.Background()
+	p, err := store.Policy(ctx, "abuse-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Config.IgnoreKeywords = before.IgnoreKeywords
+	if err := store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
+		t.Fatal(err)
+	}
+	p.Config.IgnoreKeywords = []string{}
+	if err := store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision+1, p.Config); err != nil {
+		t.Fatal(err)
+	}
+	var details string
+	if err := store.DB.QueryRowContext(ctx, "SELECT details::text FROM admin_action_logs WHERE action='policy.save' AND resource_id=$1 ORDER BY id DESC LIMIT 1", p.ID).Scan(&details); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(details, `"ignore_keywords": null`) {
+		t.Fatalf("clearing keywords was not recorded: %s", details)
+	}
+}
+
 func TestPolicyArchiveRestoreDeleteAndImport(t *testing.T) {
 	app, p, call := evaluationTestServer(t)
 	s := app.Store

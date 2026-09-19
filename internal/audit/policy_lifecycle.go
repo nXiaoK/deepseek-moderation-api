@@ -29,6 +29,13 @@ func policyChangeSummary(before, after PolicySettings) map[string]any {
 			changes[key] = value
 		}
 	}
+	// omitempty fields disappear from the new JSON when cleared. Record those
+	// removals explicitly instead of reporting an empty change set.
+	for key := range oldFields {
+		if _, exists := newFields[key]; !exists {
+			changes[key] = nil
+		}
+	}
 	return changes
 }
 func (s *Store) ArchivePolicy(ctx context.Context, actor, id string, revision int64, archived bool) error {
