@@ -860,11 +860,15 @@ test("analytics dimensions carry into audit log drilldown", async ({
   expect(q.get("policy_id")).toBe("policy-1");
   expect(q.get("client_id")).toBe("client-1");
   expect(q.get("channel_id")).toBe("channel-1");
+  expect(q.get("keyword_ignore")).toBe("include");
   expect(q.get("from")).toBe("2026-09-12T16:00:00.000Z");
   expect(q.get("to")).toBe("2026-09-13T16:00:00.000Z");
   await expect(
     page.getByRole("heading", { name: "审核记录", level: 1 }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("combobox", { name: "关键词忽略", exact: true }),
+  ).toHaveValue("include");
 });
 
 test("evaluation workbench starts a bounded comparison and exports results", async ({

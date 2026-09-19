@@ -683,7 +683,7 @@ async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
   logErrorCode.value = filter.error_code || "";
   logRequestID.value = "";
   logResult.value = "";
-  logKeywordIgnore.value = "exclude";
+  logKeywordIgnore.value = "include";
   logLatencyGT.value = "";
   logPage.value = 1;
   await navigate("logs");
