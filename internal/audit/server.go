@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,6 +33,8 @@ type Server struct {
 	Runtime           RuntimeConfig
 	admission         requestAdmission
 	ingress           ingressGuard
+	loginIngress      ingressGuard
+	trustedProxies    []netip.Prefix
 	trialSlots        chan struct{}
 	backgroundContext context.Context
 	stopBackground    context.CancelFunc
@@ -59,6 +61,10 @@ func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	trusted, err := parseTrustedProxies(config.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("PUBLIC_URL must be an origin without a path")
@@ -71,7 +77,13 @@ func NewServer(store *Store, origin, static string, options ...RuntimeConfig) (*
 		return nil, err
 	}
 	background, stop := context.WithCancel(context.Background())
-	return &Server{Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config, admission: requestAdmission{config: config}, ingress: ingressGuard{limits: ingressLimits{config.IngressRPM, config.IngressIPRPM, config.RequestConcurrency, min(8, config.RequestConcurrency), 4096}}, trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop, startedAt: time.Now()}, nil
+	return &Server{
+		Store: store, Engine: NewEngine(config.ModelConcurrency), Origin: origin, Secure: u.Scheme == "https", StaticDir: static, dummyPassword: hash, Runtime: config,
+		admission:    requestAdmission{config: config},
+		ingress:      ingressGuard{limits: ingressLimits{config.IngressRPM, config.IngressIPRPM, config.RequestConcurrency, min(8, config.RequestConcurrency), 4096}},
+		loginIngress: ingressGuard{limits: ingressLimits{120, 10, 8, 2, 4096}}, trustedProxies: trusted,
+		trialSlots: make(chan struct{}, config.TrialConcurrency), backgroundContext: background, stopBackground: stop, startedAt: time.Now(),
+	}, nil
 }
 func (s *Server) Close() {
 	s.evaluationMu.Lock()
@@ -247,7 +259,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	if !s.originOK(r) {
 		return problem(403, "invalid_origin", "登录请求来源无效")
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	host := requestClientIP(r, s.trustedProxies)
+	release, err := s.loginIngress.acquire(host, time.Now())
+	if err != nil {
+		return problem(429, "login_limited", "登录尝试过多，请稍后重试")
+	}
+	defer release()
 	ok, err := s.Store.Rate(r.Context(), "login:"+digest(host), 10)
 	if err != nil {
 		return err

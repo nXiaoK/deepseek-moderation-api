@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
 type RuntimeConfig struct {
-	ModelConcurrency   int `json:"model_concurrency"`
-	RequestConcurrency int `json:"request_concurrency"`
-	RequestBodyMiB     int `json:"request_body_mib"`
-	TrialConcurrency   int `json:"trial_concurrency"`
-	MaxImages          int `json:"max_images"`
-	IngressRPM         int `json:"ingress_rpm"`
-	IngressIPRPM       int `json:"ingress_ip_rpm"`
+	ModelConcurrency   int      `json:"model_concurrency"`
+	RequestConcurrency int      `json:"request_concurrency"`
+	RequestBodyMiB     int      `json:"request_body_mib"`
+	TrialConcurrency   int      `json:"trial_concurrency"`
+	MaxImages          int      `json:"max_images"`
+	IngressRPM         int      `json:"ingress_rpm"`
+	IngressIPRPM       int      `json:"ingress_ip_rpm"`
+	TrustedProxies     []string `json:"trusted_proxies"`
 }
 
 func DefaultRuntimeConfig() RuntimeConfig {
@@ -39,9 +41,15 @@ func RuntimeConfigFromEnv() (RuntimeConfig, error) {
 	if os.Getenv("AUDIT_TRIAL_CONCURRENCY") == "" {
 		c.TrialConcurrency = min(c.TrialConcurrency, c.ModelConcurrency)
 	}
+	if value := strings.TrimSpace(os.Getenv("AUDIT_TRUSTED_PROXIES")); value != "" {
+		c.TrustedProxies = strings.Split(value, ",")
+	}
 	return c, c.Validate()
 }
 func (c RuntimeConfig) Validate() error {
+	if _, err := parseTrustedProxies(c.TrustedProxies); err != nil {
+		return err
+	}
 	if c.IngressRPM < 1 || c.IngressRPM > 1000000 || c.IngressIPRPM < 1 || c.IngressIPRPM > c.IngressRPM {
 		return errors.New("invalid ingress limits: global RPM 1-1000000, per-IP RPM 1-global RPM")
 	}

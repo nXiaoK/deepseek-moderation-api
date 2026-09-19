@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,7 +35,7 @@ type requestAudit struct {
 
 func (s *Server) auditModeration(next endpoint) endpoint {
 	return func(w http.ResponseWriter, r *http.Request) (err error) {
-		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		ip := requestClientIP(r, s.trustedProxies)
 		releaseIngress, err := s.ingress.acquire(ip, time.Now())
 		if err != nil {
 			s.ingress.recordRejection(time.Now())

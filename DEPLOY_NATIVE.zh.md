@@ -205,7 +205,8 @@ server {
 
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # This example has a single public-facing proxy; discard client-supplied XFF.
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_connect_timeout 5s;
     proxy_read_timeout 45s;
     proxy_send_timeout 45s;
@@ -244,9 +245,12 @@ Certbot 会交互询问邮箱及服务条款。需要域名解析和 80 端口�
 
 ```dotenv
 PUBLIC_URL=https://audit.example.com
+AUDIT_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
 
 不要带末尾 `/`，然后执行 `sudo systemctl restart deepseek-audit`。之后访问 **https://audit.example.com** 登录；无需把应用端口 8090 开放到公网。
+
+`AUDIT_TRUSTED_PROXIES` 只填写应用实际直连的可信代理地址或网段，默认留空时忽略所有转发头。上述同机 Nginx 覆盖 `X-Forwarded-For` 后，登录及审核入口会按真实客户端 IP 分桶限流；登录同时保留全局速率与并发保护。不要信任 `0.0.0.0/0`、`::/0` 或公网客户端网段。如果前面还有 CDN/其他代理，应限制 Nginx 的来源并正确设置其真实 IP 模块，或逐层追加转发链并精确配置可信代理；应用从右向左跳过可信节点，在首个不可信节点停止。容器部署应填写应用看到的实际代理来源地址，不能直接照抄回环地址。
 
 ## 9. sub2api 连接设置
 
