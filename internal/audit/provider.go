@@ -162,7 +162,7 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 		}
 		return Assessment{}, usage, content, upstreamCallError(err, cfg)
 	}
-	if env.Status == "failed" || env.Status == "incomplete" || env.Status == "cancelled" || len(env.Error) > 0 && string(env.Error) != "null" {
+	if env.Status != "completed" || len(env.Error) > 0 && string(env.Error) != "null" {
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
 	assessment, err := ParseAssessment([]byte(content))
@@ -219,12 +219,14 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 		text      strings.Builder
 		env       grokResponse
 		n         int
+		completed bool
 	)
 	flush := func() error {
 		if eventType == "" && len(data) == 0 {
 			return nil
 		}
 		payload := strings.Join(data, "\n")
+		declaredType := eventType
 		eventType, data = "", nil
 		if payload == "" || payload == "[DONE]" {
 			return nil
@@ -239,6 +241,9 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 		}
 		if json.Unmarshal([]byte(payload), &ev) != nil {
 			return problem(502, "invalid_model_response", "模型响应 JSON 无效")
+		}
+		if ev.Type == "" {
+			ev.Type = declaredType
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
@@ -258,6 +263,10 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 			if json.Unmarshal(raw, &env) != nil {
 				return problem(502, "invalid_model_response", "模型响应 JSON 无效")
 			}
+			if ev.Type != "response.completed" || env.Status != "completed" {
+				return problem(502, "invalid_model_response", "模型未完整返回审核结果")
+			}
+			completed = true
 		}
 		if ev.Type == "" && (len(ev.Response) > 0 || ev.Status != "" || len(ev.Usage) > 0) {
 			raw := ev.Response
@@ -310,7 +319,7 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 	} else if full != "" {
 		content = full
 	}
-	if content == "" {
+	if !completed || env.Status != "completed" || content == "" {
 		return content, env, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
 	return content, env, nil
