@@ -118,12 +118,11 @@ func (s *Store) ReserveCost(ctx context.Context, id, client, kind string, p Poli
 	date := at.In(shanghai).Format("2006-01-02")
 	month := at.In(shanghai).Format("2006-01") + "-01"
 	if kind == "production" {
-		var active, allowed bool
-		var expires sql.NullTime
-		err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL,expires_at,policy_ids ? $2 FROM client_api_keys WHERE id=$1 FOR UPDATE", client, p.ID).Scan(&active, &expires, &allowed)
-		// PostgreSQL NOW() is fixed at transaction start, which can precede a
-		// wait on this key's budget lock. Check expiry only after acquiring it.
-		if errors.Is(err, sql.ErrNoRows) || err == nil && (!active || expires.Valid && !expires.Time.After(time.Now())) {
+		var active, allowed, unexpired bool
+		err = tx.QueryRowContext(ctx, "SELECT active AND deleted_at IS NULL,(expires_at IS NULL OR expires_at>clock_timestamp()),policy_ids ? $2 FROM client_api_keys WHERE id=$1 FOR UPDATE", client, p.ID).Scan(&active, &unexpired, &allowed)
+		// clock_timestamp() is evaluated after FOR UPDATE finishes waiting;
+		// transaction-stable NOW() could still reflect the earlier snapshot.
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (!active || !unexpired) {
 			return nil, problem(401, "invalid_api_key", "访问密钥已停用或过期")
 		}
 		if err != nil {
