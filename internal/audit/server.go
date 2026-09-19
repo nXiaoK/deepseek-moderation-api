@@ -397,7 +397,7 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := readJSON(w, r, &in); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`).MatchString(in.Alias) {
+	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || !policyAliasPattern.MatchString(in.Alias) {
 		return problem(400, "invalid_policy", "请输入策略名称和有效的模型别名")
 	}
 	p, err := s.Store.CreatePolicy(r.Context(), actor(r), in.Name, in.Alias, in.Source)

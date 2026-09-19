@@ -72,7 +72,7 @@ func TestFreeTextReservationRemainsValidWhileUsagePending(t *testing.T) {
 	p, key := configureBillingPolicy(t, store, 0)
 	cfg := testInference(t, store, p)
 	raw, _ := json.Marshal(PriceRates{})
-	if _, err := store.DB.Exec("INSERT INTO model_prices(model,rates,source,author) VALUES($1,$2,'free tariff','admin')", cfg.Model, string(raw)); err != nil {
+	if _, err := store.DB.Exec("INSERT INTO model_prices(model,rates,source,author,credential_id,effective_at) VALUES($1,$2,'free tariff','admin',$3,clock_timestamp()-INTERVAL '1 second')", cfg.Model, string(raw), cfg.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
