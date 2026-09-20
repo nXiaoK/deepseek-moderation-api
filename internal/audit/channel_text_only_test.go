@@ -211,7 +211,7 @@ func TestTextOnlyChannelMigration(t *testing.T) {
 	if _, err := store.DB.ExecContext(ctx, "ALTER TABLE audit_model_channels DROP COLUMN text_only; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB.ExecContext(ctx, "DROP TABLE audit_schema_migrations"); err != nil {
+	if _, err := store.DB.ExecContext(ctx, "DROP TABLE email_notifications,email_settings,audit_schema_migrations"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {

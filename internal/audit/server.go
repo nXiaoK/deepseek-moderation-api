@@ -41,6 +41,8 @@ type Server struct {
 	evaluationMu      sync.Mutex
 	evaluationCancels map[string]context.CancelFunc
 	evaluationWorkers sync.WaitGroup
+	emailWorkers      sync.WaitGroup
+	emailStarted      bool
 	closing           bool
 	startedAt         time.Time
 	telemetry         auditTelemetry
@@ -91,6 +93,7 @@ func (s *Server) Close() {
 	s.stopBackground()
 	s.evaluationMu.Unlock()
 	s.evaluationWorkers.Wait()
+	s.emailWorkers.Wait()
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -113,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	})
 	admin("POST /admin/auth/logout", s.logout)
 	admin("PUT /admin/auth/password", s.changePassword)
+	admin("GET /admin/settings/email", s.getEmailSettings)
+	admin("PUT /admin/settings/email", s.saveEmailSettings)
+	admin("POST /admin/settings/email/test", s.testEmailSettings)
+	admin("GET /admin/settings/email/status", s.emailStatus)
 	admin("GET /admin/policies", s.listPolicies)
 	admin("POST /admin/policies", s.createPolicy)
 	admin("POST /admin/policies/import", s.importPolicy)

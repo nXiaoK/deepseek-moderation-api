@@ -309,6 +309,23 @@ export async function mockAPI(page: Page) {
       },
       "/admin/audit-logs": { items: [log], total: 1 },
       "/admin/audit-logs/audit-1": log,
+      "/admin/settings/email": {
+        enabled: false,
+        host: "",
+        port: 465,
+        security: "tls",
+        username: "",
+        from: "",
+        to: "",
+        revision: 1,
+        password_set: false,
+      },
+      "/admin/settings/email/status": {
+        pending: 0,
+        failed: 0,
+        sent: 0,
+        last_sent_at: null,
+      },
       "/admin/actions": [
         {
           username: "admin",

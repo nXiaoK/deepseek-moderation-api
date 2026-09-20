@@ -55,6 +55,7 @@ func run() error {
 	}
 	server := &http.Server{Addr: env("LISTEN_ADDR", "127.0.0.1:8090"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 40 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	go app.CleanupLoop(ctx)
+	app.StartEmailWorker()
 	stopped := make(chan error, 1)
 	go func() {
 		slog.Info("audit service listening", "address", server.Addr)

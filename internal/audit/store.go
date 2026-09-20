@@ -436,7 +436,16 @@ func (s *Store) Record(ctx context.Context, l AuditLog, text string, days int) e
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO audit_requests(id,kind,policy_id,client_id,flagged,error_code,metadata,input_cipher,expires_at,output_cipher,output_expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", l.ID, l.Kind, l.PolicyID, l.ClientID, l.Flagged, l.ErrorCode, string(raw), encrypted, time.Now().Add(time.Duration(days)*24*time.Hour), output, outputExpiry)
+	// Commit the audit and its notification together. The settings row lock
+	// serializes enqueueing with disabling reminders and clearing pending mail.
+	_, err = s.DB.ExecContext(ctx, `WITH recorded AS (
+		INSERT INTO audit_requests(id,kind,policy_id,client_id,flagged,error_code,metadata,input_cipher,expires_at,output_cipher,output_expires_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
+	), enabled AS (
+		SELECT id FROM email_settings WHERE id=TRUE AND config->>'enabled'='true' AND $12 FOR SHARE
+	) INSERT INTO email_notifications(request_id) SELECT recorded.id FROM recorded WHERE EXISTS(SELECT 1 FROM enabled)`,
+		l.ID, l.Kind, l.PolicyID, l.ClientID, l.Flagged, l.ErrorCode, string(raw), encrypted, time.Now().Add(time.Duration(days)*24*time.Hour), output, outputExpiry,
+		l.Kind == "production" && l.Flagged && l.ErrorCode == "" && !l.KeywordIgnored)
 	return err
 }
 func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) {
