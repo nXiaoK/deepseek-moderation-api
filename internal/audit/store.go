@@ -292,7 +292,7 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 	if err := validateProviderURL(provider, baseURL); err != nil {
 		return "", problem(400, "invalid_connection", err.Error())
 	}
-	baseURL = providerRoot(baseURL)
+	baseURL = normalizeProviderURL(baseURL)
 
 	if key != "" && (len(key) < 8 || len(key) > 512 || strings.ContainsAny(key, "\r\n\t ")) {
 		return "", problem(400, "invalid_credential", "密钥格式无效")
@@ -311,7 +311,7 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 			if err != nil {
 				return err
 			}
-			if oldProvider != provider || providerRoot(oldURL) != baseURL {
+			if oldProvider != provider || normalizeProviderURL(oldURL) != baseURL {
 				return problem(400, "credential_binding_immutable", "修改供应商或连接地址需创建新凭证，防止原密钥发送到其他目标")
 			}
 		}
@@ -626,7 +626,7 @@ func (s *Store) CredentialForConfig(ctx context.Context, cfg PolicyConfig) (stri
 	if err != nil {
 		return "", err
 	}
-	if provider != cfg.ProviderID() || providerRoot(baseURL) != providerRoot(cfg.BaseURL) {
+	if provider != cfg.ProviderID() || normalizeProviderURL(baseURL) != normalizeProviderURL(cfg.BaseURL) {
 		return "", problem(400, "credential_provider_mismatch", "凭证绑定的供应商或服务地址与策略不匹配")
 	}
 	return s.Vault.Open(raw, "credential:"+cfg.CredentialID)

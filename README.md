@@ -245,7 +245,9 @@ go test ./internal/audit -run TestBackupRestoreRoundTrip -count=1
 
 ## DeepSeek 第三方接口
 
-“连接密钥 → DeepSeek（官方 / 第三方）”支持填写 HTTP(S) 根地址或 `/v1` 地址，例如 `https://api.example.com/v1`；第三方请求统一发送到 `/v1/chat/completions`，不会重复拼接 `/v1`。官方地址仍使用原 `/chat/completions`。第三方服务需支持模型当前的 Chat Completions 参数和 JSON 输出格式。
+“连接密钥”支持填写 HTTP(S) 根地址或完整 API 地址。仅填写域名（可含端口、末尾 `/`）时，DeepSeek 官方自动补全 `/chat/completions`，第三方 DeepSeek 补全 `/v1/chat/completions`，Grok/sub2api 补全 `/v1/responses`。填写具体路径时原样保存和调用，例如 `https://api.example.com/proxy/v1/chat/completions` 或 `https://sub2api.example.com/openai/v1/responses`，不再追加任何后缀，路径末尾的 `/` 也会保留；单独填写 `/v1` 同样视为完整接口路径。旧版本已保存的 `/v1` 连接此前已归一化为根地址，继续自动补全。地址不能包含凭据、查询参数或片段。第三方服务需支持模型当前的 Chat Completions 参数和 JSON 输出格式。
+
+Grok/sub2api 的 `AUDIT_SUB2API_ORIGINS` 仍填写源地址（协议、域名和端口，不含路径）。可选的模型列表探测使用同一源地址的 `/v1/models`；不提供该接口的网关可手动填写模型后试跑。
 
 Responses 通道在顶层 `instructions` 中保留策略提示词，并在 `input` 中单独添加 developer 消息，要求输出包含 `confidence` 和 `reason` 的 JSON 对象。这样兼容只检查输入消息中是否包含 `json` 的第三方网关；待审文本和图片仍放在独立的 user 消息中。更新后如通道仍显示配置异常，点击“清缓存 / 重试连接”后再试跑。
 

@@ -25,8 +25,8 @@ func (c PolicyConfig) ProviderID() string {
 }
 func validateProviderURL(provider, base string) error {
 	u, err := url.Parse(base)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || (u.Path != "" && u.Path != "/" && u.Path != "/v1" && u.Path != "/v1/") {
-		return errors.New("连接地址必须为服务根地址或 /v1，不能包含凭据、查询参数或其他路径")
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(base, "#") || u.Opaque != "" {
+		return errors.New("连接地址必须为 HTTP(S) 服务根地址或完整 API 地址，不能包含凭据、查询参数或片段")
 	}
 	switch provider {
 	case ProviderDeepSeek:
@@ -52,24 +52,41 @@ func validateProviderURL(provider, base string) error {
 	}
 	return nil
 }
-func providerRoot(base string) string {
-	base = strings.TrimRight(base, "/")
-	return strings.TrimSuffix(base, "/v1")
+
+// Only normalize a root slash. Endpoint paths, including escaped characters and
+// trailing slashes, are part of both the request target and credential binding.
+func normalizeProviderURL(base string) string {
+	u, err := url.Parse(base)
+	if err == nil && u.EscapedPath() == "/" {
+		return strings.TrimSuffix(base, "/")
+	}
+	return base
+}
+func providerOrigin(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 func (c PolicyConfig) inferenceURL() string {
+	base := normalizeProviderURL(c.BaseURL)
+	u, err := url.Parse(base)
+	if err != nil || u.EscapedPath() != "" {
+		return base
+	}
 	if c.ProviderID() == ProviderGrok {
-		return providerRoot(c.BaseURL) + "/v1/responses"
+		return base + "/v1/responses"
 	}
-	root := providerRoot(c.BaseURL)
-	if root == "https://api.deepseek.com" {
-		return root + "/chat/completions"
+	if base == "https://api.deepseek.com" {
+		return base + "/chat/completions"
 	}
-	return root + "/v1/chat/completions"
+	return base + "/v1/chat/completions"
 }
 
 // Identify the official endpoint for provider-specific request defaults.
 func (c PolicyConfig) officialPricing() bool {
-	return c.ProviderID() == ProviderDeepSeek && providerRoot(c.BaseURL) == "https://api.deepseek.com"
+	return c.ProviderID() == ProviderDeepSeek && providerOrigin(c.BaseURL) == "https://api.deepseek.com"
 }
 func (c PolicyConfig) providerLabel() string {
 	if c.ProviderID() == ProviderGrok {
@@ -375,7 +392,8 @@ func (e *Engine) ProbeGrok(ctx context.Context, cfg PolicyConfig, key string) (*
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerRoot(cfg.BaseURL)+"/v1/models", nil)
+	// Model discovery is optional and always uses the origin's standard endpoint.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerOrigin(cfg.BaseURL)+"/v1/models", nil)
 	if err != nil {
 		return nil, err
 	}

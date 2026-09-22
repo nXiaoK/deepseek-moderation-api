@@ -79,6 +79,11 @@ func TestGrokModelListingIsStandardAndOptional(t *testing.T) {
 	if err != nil || len(models.Models) != 2 {
 		t.Fatal(models, err)
 	}
+	custom := grokTestConfig()
+	custom.BaseURL += "/proxy/v1/responses"
+	if _, err := engine.ProbeGrok(context.Background(), custom, "normal-key"); err != nil {
+		t.Fatal("custom inference path must not be included in model discovery", err)
+	}
 	status = http.StatusNotFound
 	if _, err = engine.ProbeGrok(context.Background(), grokTestConfig(), "normal-key"); err == nil {
 		t.Fatal("unsupported listing should be reported")
@@ -119,7 +124,7 @@ func TestGrokURLsRequireExplicitOriginAndNoCrossProviderSecrets(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, base := range []string{"https://evil.test", "https://sub2api.test@evil.test", "https://sub2api.test/redirect", "https://sub2api.test?x=1", "https://sub2api.test/#a"} {
+	for _, base := range []string{"https://evil.test", "https://sub2api.test@evil.test", "https://sub2api.test?x=1", "https://sub2api.test/#a"} {
 		copy := cfg
 		copy.BaseURL = base
 		if copy.Validate() == nil {
@@ -130,8 +135,8 @@ func TestGrokURLsRequireExplicitOriginAndNoCrossProviderSecrets(t *testing.T) {
 		t.Fatal(cfg.inferenceURL())
 	}
 	cfg.BaseURL += "/v1/"
-	if cfg.inferenceURL() != "https://sub2api.test/v1/responses" {
-		t.Fatal("double v1")
+	if cfg.inferenceURL() != cfg.BaseURL {
+		t.Fatal("explicit path changed")
 	}
 	cfg.Provider = ProviderDeepSeek
 	if err := cfg.Validate(); err != nil {
@@ -327,10 +332,12 @@ func TestDeepSeekThirdPartyURLsAndRequestPath(t *testing.T) {
 		official   bool
 	}{
 		{"https://api.deepseek.com", "https://api.deepseek.com/chat/completions", true},
-		{"https://api.deepseek.com/v1/", "https://api.deepseek.com/chat/completions", true},
+		{"https://api.deepseek.com/v1/", "https://api.deepseek.com/v1/", true},
 		{"https://gateway.example.com", "https://gateway.example.com/v1/chat/completions", false},
-		{"https://gateway.example.com/v1/", "https://gateway.example.com/v1/chat/completions", false},
-		{"http://127.0.0.1:8099/v1", "http://127.0.0.1:8099/v1/chat/completions", false},
+		{"https://gateway.example.com/v1/", "https://gateway.example.com/v1/", false},
+		{"http://127.0.0.1:8099/v1", "http://127.0.0.1:8099/v1", false},
+		{"https://api.deepseek.com/v1/chat/completions", "https://api.deepseek.com/v1/chat/completions", true},
+		{"https://api.deepseek.com/chat/completions", "https://api.deepseek.com/chat/completions", true},
 	} {
 		cfg := DefaultConfig()
 		cfg.BaseURL = tc.base
@@ -341,7 +348,7 @@ func TestDeepSeekThirdPartyURLsAndRequestPath(t *testing.T) {
 			t.Fatal("incorrect endpoint or pricing", tc.base, cfg.inferenceURL())
 		}
 	}
-	for _, base := range []string{"ftp://gateway.test", "https://user:secret@gateway.test", "https://gateway.test?key=secret", "https://gateway.test/#fragment", "https://gateway.test/v1/chat/completions"} {
+	for _, base := range []string{"ftp://gateway.test", "https://user:secret@gateway.test", "https://gateway.test?key=secret", "https://gateway.test/#fragment", "https://gateway.test?", "https://gateway.test/#"} {
 		cfg := DefaultConfig()
 		cfg.BaseURL = base
 		if cfg.Validate() == nil {
@@ -356,25 +363,100 @@ func TestDeepSeekThirdPartyURLsAndRequestPath(t *testing.T) {
 	}))
 	defer upstream.Close()
 	cfg := DefaultConfig()
-	cfg.BaseURL = upstream.URL + "/v1/"
+	cfg.BaseURL = upstream.URL + "/v1/chat/completions"
 	result, _, _, err := NewEngine(1).Assess(context.Background(), cfg, "third-party-test-key", "hello")
 	if err != nil || result.Confidence != .2 {
 		t.Fatal(result, err)
 	}
 }
 
+func TestProviderRootCompletionAndExplicitEndpoints(t *testing.T) {
+	t.Setenv("AUDIT_SUB2API_ORIGINS", "https://gateway.test")
+	for _, provider := range []string{ProviderDeepSeek, ProviderGrok} {
+		for _, path := range []string{"", "/", "/v1", "/v1/", "/v1/chat/completions", "/proxy/v2/responses/", "/custom%2Fendpoint", "/%2F", "//custom/api", "/proxy/v1"} {
+			t.Run(provider+path, func(t *testing.T) {
+				cfg := DefaultConfig()
+				cfg.Provider = provider
+				cfg.BaseURL = "https://gateway.test" + path
+				if err := cfg.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				want := cfg.BaseURL
+				if path == "" || path == "/" {
+					want = "https://gateway.test/v1/chat/completions"
+					if provider == ProviderGrok {
+						want = "https://gateway.test/v1/responses"
+					}
+				}
+				engine := NewEngine(1)
+				calls := 0
+				engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.URL.String() != want || r.Method != http.MethodPost {
+						t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL, want)
+					}
+					if provider == ProviderGrok {
+						return grokStreamResponse(grokSSE(`{"confidence":0.2,"reason":"正常"}`, "")), nil
+					}
+					return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.2,\"reason\":\"正常\"}"}}]}`))}, nil
+				})}
+				// Exercise the same normalization used when saving credentials.
+				cfg.BaseURL = normalizeProviderURL(cfg.BaseURL)
+				result, _, _, err := engine.Assess(context.Background(), cfg, "test-only-key", "hello")
+				if err != nil || result.Confidence != .2 || calls != 1 {
+					t.Fatal(result, calls, err)
+				}
+			})
+		}
+		for _, base := range []string{"https://user:secret@gateway.test/custom/api", "https://gateway.test/custom/api?key=secret", "https://gateway.test/custom/api?", "https://gateway.test/custom/api#fragment", "https://gateway.test/custom/api#", "ftp://gateway.test/custom/api", "/custom/api", "https://:443/custom/api"} {
+			if err := validateProviderURL(provider, base); err == nil {
+				t.Fatal("invalid endpoint accepted", provider, base)
+			}
+		}
+	}
+	if err := validateProviderURL(ProviderGrok, "https://unapproved.test/custom/api"); err == nil {
+		t.Fatal("custom path bypassed origin allowlist")
+	}
+}
+
 func TestDeepSeekThirdPartyCredentialBindingAndCost(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
-	cred, err := store.SaveProviderCredential(ctx, "admin", "", "third-party", "third-party-test-key", true, ProviderDeepSeek, "https://gateway.test/v1/")
+	cred, err := store.SaveProviderCredential(ctx, "admin", "", "third-party", "third-party-test-key", true, ProviderDeepSeek, "https://gateway.test/proxy/v1/chat/completions/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()
 	cfg.CredentialID = cred
-	cfg.BaseURL = "https://gateway.test/v1"
+	cfg.BaseURL = "https://gateway.test/proxy/v1/chat/completions/"
 	if _, err = store.CredentialForConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
+	}
+	credentials, err := store.Credentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, credential := range credentials {
+		if credential.ID == cred {
+			found = true
+			if credential.BaseURL != cfg.BaseURL {
+				t.Fatal("saved endpoint changed", credential.BaseURL)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("saved credential missing")
+	}
+	for _, base := range []string{"https://gateway.test", "https://gateway.test/proxy/v1/chat/completions", cfg.BaseURL + "v1"} {
+		wrong := cfg
+		wrong.BaseURL = base
+		if _, err := store.CredentialForConfig(ctx, wrong); err == nil {
+			t.Fatal("credential crossed endpoint path", base)
+		}
+		if _, err := store.SaveProviderCredential(ctx, "admin", cred, "third-party", "", true, ProviderDeepSeek, base); err == nil {
+			t.Fatal("saved endpoint path was changed", base)
+		}
 	}
 	wrong := cfg
 	wrong.BaseURL = "https://other-gateway.test"

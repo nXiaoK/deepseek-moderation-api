@@ -1087,7 +1087,7 @@ window.addEventListener("beforeunload", (e) => {
                   >{{
                     credentialProvider === "deepseek"
                       ? "DeepSeek API 地址"
-                      : "sub2api 服务根地址"
+                      : "sub2api API 地址"
                   }}<input
                     v-model="credentialBaseURL"
                     type="url"
@@ -1095,16 +1095,19 @@ window.addEventListener("beforeunload", (e) => {
                     :readonly="!!credentialEditID"
                     :placeholder="
                       credentialProvider === 'deepseek'
-                        ? 'https://api.deepseek.com 或 https://api.example.com/v1'
+                        ? 'https://api.deepseek.com 或 https://api.example.com/v1/chat/completions'
                         : 'https://sub2api.example.com'
                     "
                   /><small class="muted"
                     ><template v-if="credentialProvider === 'deepseek'"
                       >支持官方地址或兼容 Chat Completions 的第三方 HTTP(S)
-                      接口。第三方地址可填根地址或 /v1，系统自动调用
-                      /v1/chat/completions。</template
+                      接口。仅填根地址时自动补全接口路径（第三方为
+                      /v1/chat/completions）；填写具体路径时原样调用，不再追加后缀。</template
                     ><template v-else
-                      >审核系统的 AUDIT_SUB2API_ORIGINS 需允许此地址，sub2api
+                      >仅填根地址时自动调用
+                      /v1/responses；填写具体路径时原样调用。 审核系统的
+                      AUDIT_SUB2API_ORIGINS
+                      需允许此地址的源地址（协议和域名端口），sub2api
                       无需新增配置。</template
                     >凭证保存后地址固定，换地址请新建连接。</small
                   ></label
