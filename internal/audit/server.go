@@ -136,6 +136,7 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /admin/model-channels/{id}", s.saveChannel)
 	admin("DELETE /admin/model-channels/{id}", s.deleteChannel)
 	admin("POST /admin/model-channels/{id}/cache/clear", s.clearChannelCache)
+	admin("POST /admin/model-channels/{id}/test", s.testChannel)
 	admin("GET /admin/credentials", s.credentials)
 	admin("POST /admin/credentials", s.saveCredential)
 	admin("PUT /admin/credentials/{id}", s.saveCredential)

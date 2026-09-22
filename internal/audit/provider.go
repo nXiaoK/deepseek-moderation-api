@@ -193,6 +193,7 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 		return Assessment{}, attempt, "", upstreamCallError(err, cfg)
 	}
 	defer res.Body.Close()
+	recordUpstreamStatus(ctx, res.StatusCode)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return Assessment{}, attempt, "", classifyUpstream(res, key)
 	}

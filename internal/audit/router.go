@@ -54,12 +54,13 @@ type routeCandidate struct {
 }
 type upstreamFailure struct {
 	*APIError
-	cooldown time.Duration
+	cooldown   time.Duration
+	httpStatus int
 }
 
 func (e *upstreamFailure) Unwrap() error { return e.APIError }
 func classifyUpstream(res *http.Response, credential string) error {
-	e := &upstreamFailure{APIError: &APIError{503, "upstream_unavailable", "模型请求失败"}}
+	e := &upstreamFailure{APIError: &APIError{503, "upstream_unavailable", "模型请求失败"}, httpStatus: res.StatusCode}
 	switch {
 	case res.StatusCode == 429:
 		e.Code = "upstream_rate_limited"
@@ -82,6 +83,8 @@ func classifyUpstream(res *http.Response, credential string) error {
 	}
 	if detail := upstreamErrorDetail(res, credential); detail != "" {
 		e.Message += fmt.Sprintf("（HTTP %d：%s）", res.StatusCode, detail)
+	} else {
+		e.Message += fmt.Sprintf("（HTTP %d）", res.StatusCode)
 	}
 	return e
 }
@@ -97,17 +100,27 @@ func upstreamErrorDetail(res *http.Response, credential string) string {
 		return ""
 	}
 	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Detail string `json:"detail"`
+		Error   json.RawMessage `json:"error"`
+		Detail  string          `json:"detail"`
+		Message string          `json:"message"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		return ""
 	}
-	message := payload.Error.Message
+	var nested struct {
+		Message string `json:"message"`
+	}
+	message := ""
+	if json.Unmarshal(payload.Error, &nested) == nil {
+		message = nested.Message
+	} else {
+		_ = json.Unmarshal(payload.Error, &message)
+	}
 	if message == "" {
 		message = payload.Detail
+	}
+	if message == "" {
+		message = payload.Message
 	}
 	// Scrub the actual credential before generic redaction, normalization or
 	// truncation: providers and gateways accept keys with arbitrary formats.

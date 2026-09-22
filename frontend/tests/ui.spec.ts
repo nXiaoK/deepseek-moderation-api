@@ -420,6 +420,84 @@ test("model channel RPM can be created and edited", async ({ page }) => {
   expect(updated?.expected_revision).toBe(1);
 });
 
+test("model channel test shows endpoint, detailed failures, recovery and request errors", async ({
+  page,
+}) => {
+  let calls = 0;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/admin/model-channels/channel-1/test", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ expected_revision: 1 });
+    calls++;
+    if (calls === 1) await gate;
+    if (calls === 3)
+      return route.fulfill({
+        status: 409,
+        json: { error: { message: "配置已被更新，请重新加载后保存" } },
+      });
+    return route.fulfill({
+      json: {
+        ok: calls === 2,
+        attempted: true,
+        channel_id: "channel-1",
+        channel_name: "DeepSeek 主用",
+        endpoint: "https://api.cline.bot/api/v1/chat/completions",
+        api_format: "chat_completions",
+        model: "~deepseek/deepseek-v4-flash-latest",
+        timeout_ms: 4000,
+        max_tokens: 512,
+        latency_ms: 830,
+        http_status: calls === 1 ? 404 : 200,
+        error_code: calls === 1 ? "upstream_config_invalid" : undefined,
+        error_message:
+          calls === 1
+            ? "模型名称或参数不受支持（HTTP 404：Model not found）"
+            : undefined,
+        hint: calls === 1 ? "检查实际请求地址和接口类型" : undefined,
+        assessment:
+          calls === 2 ? { confidence: 0.1, reason: "正常测试文本" } : undefined,
+        model_output:
+          calls === 2
+            ? '{"confidence":0.1,"reason":"正常测试文本"}'
+            : undefined,
+        usage: { reported: true, total_tokens: 30 },
+      },
+    });
+  });
+  await page.goto("/");
+  await navigate(page, "审核模型");
+  const button = page.getByRole("button", {
+    name: "测试 DeepSeek 主用",
+    exact: true,
+  });
+  await button.click();
+  await expect(button).toBeDisabled();
+  const result = page.getByRole("region", { name: "模型测试结果" });
+  await expect(result).toContainText("测试中");
+  release!();
+  await expect(result).toContainText("测试失败");
+  await expect(result).toContainText(
+    "https://api.cline.bot/api/v1/chat/completions",
+  );
+  await expect(result).toContainText("~deepseek/deepseek-v4-flash-latest");
+  await expect(result).toContainText("HTTP 404");
+  await expect(result).toContainText("Model not found");
+  await expect(result).toContainText("检查实际请求地址和接口类型");
+  await button.click();
+  await expect(result).toContainText("测试成功");
+  await expect(result).toContainText("正常测试文本");
+  await expect(result).not.toContainText("Model not found");
+  await result.getByText("查看模型输出", { exact: true }).click();
+  await expect(result.locator("pre")).toContainText('"confidence":0.1');
+  await button.click();
+  await expect(result).toContainText("配置已被更新");
+  await expect(result).not.toContainText("测试成功");
+  expect(calls).toBe(3);
+});
+
 test("policy cooldown settings show legacy defaults and persist edits", async ({
   page,
 }) => {

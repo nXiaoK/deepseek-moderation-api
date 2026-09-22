@@ -1190,7 +1190,8 @@ window.addEventListener("beforeunload", (e) => {
                   取消编辑
                 </button>
                 <p class="muted small">
-                  编辑时 API Key 留空保留原密钥，填写则替换；保存后仅显示掩码。
+                  编辑时 API Key
+                  留空保留原密钥，填写则替换；保存后仅显示掩码。启用状态不代表连接已验证，请前往“审核模型”点击“测试”。
                 </p>
               </form>
             </section>
@@ -1221,7 +1222,7 @@ window.addEventListener("beforeunload", (e) => {
                   <p>
                     <code>{{ c.masked }}</code
                     ><span class="badge" :class="c.active ? 'green' : 'gray'">{{
-                      c.active ? "可用" : "已停用"
+                      c.active ? "已启用" : "已停用"
                     }}</span>
                   </p>
                 </div>

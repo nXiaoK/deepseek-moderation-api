@@ -126,6 +126,8 @@ func TestResponsesJSONModeChecksInputMessages(t *testing.T) {
 func TestUpstreamErrorDetail(t *testing.T) {
 	for _, tt := range []struct{ name, body, want string }{
 		{"fastapi", `{"detail":"Unsupported parameter: temperature"}`, "Unsupported parameter: temperature"},
+		{"message", `{"message":"Model not found"}`, "Model not found"},
+		{"string_error", `{"error":"Insufficient balance"}`, "Insufficient balance"},
 		{"openai", `{"error":{"message":"Unsupported parameter: max_output_tokens","param":"max_output_tokens"}}`, "Unsupported parameter: max_output_tokens"},
 		{"redacted", `{"detail":"Bad sk-secret dsa_private bearer another-secret"}`, "[隐去]"},
 		{"html", `<html>private server response</html>`, ""},
@@ -141,8 +143,11 @@ func TestUpstreamErrorDetail(t *testing.T) {
 			if tt.want != "" && !strings.Contains(err.Message, tt.want) {
 				t.Fatalf("lost upstream reason: %s", err.Message)
 			}
-			if tt.want == "" && strings.Contains(err.Message, "HTTP") {
+			if tt.want == "" && strings.Contains(err.Message, "HTTP 400：") {
 				t.Fatal("unstructured response was exposed")
+			}
+			if !strings.Contains(err.Message, "HTTP 400") {
+				t.Fatal("HTTP status missing")
 			}
 			for _, secret := range []string{"sk-secret", "dsa_private", "another-secret", "private server response"} {
 				if strings.Contains(err.Message, secret) {

@@ -84,6 +84,25 @@ export interface ModelChannel {
     rpm_used?: number;
   };
 }
+export interface ChannelTestResult {
+  ok: boolean;
+  attempted: boolean;
+  channel_id: string;
+  channel_name: string;
+  model: string;
+  api_format: string;
+  endpoint: string;
+  timeout_ms: number;
+  max_tokens: number;
+  latency_ms: number;
+  http_status?: number;
+  error_code?: string;
+  error_message?: string;
+  hint?: string;
+  model_output?: string;
+  assessment?: { confidence: number; reason: string };
+  usage: Usage;
+}
 export interface AuditAttempt {
   input_scope?: string;
   image_count?: number;

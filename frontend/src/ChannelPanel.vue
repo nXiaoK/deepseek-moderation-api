@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
-import { api, ignoreAPIError, type ModelChannel, type Credential } from "./api";
+import {
+  api,
+  ignoreAPIError,
+  type ModelChannel,
+  type Credential,
+  type ChannelTestResult,
+} from "./api";
 const props = defineProps<{
   channels: ModelChannel[];
   credentials: Credential[];
@@ -24,6 +30,10 @@ const empty = () => ({
 const form = ref(empty()),
   busy = ref(false),
   notice = ref("");
+const testingID = ref("");
+const testResult = ref<ChannelTestResult | null>(null);
+const testError = ref("");
+const testName = ref("");
 const affected = computed(
   () => props.channels.find((c) => c.id === form.value.id)?.policy_names || [],
 );
@@ -93,6 +103,28 @@ async function clear(c: ModelChannel) {
     await api(`/admin/model-channels/${c.id}/cache/clear`, "POST", {});
     if (form.value.id === c.id) form.value = empty();
     notice.value = "结果缓存已失效，连接健康状态已重置。";
+    await props.reload();
+  });
+}
+async function testConnection(c: ModelChannel) {
+  await work(async () => {
+    testingID.value = c.id;
+    testName.value = c.name;
+    testResult.value = null;
+    testError.value = "";
+    try {
+      testResult.value = await api<ChannelTestResult>(
+        `/admin/model-channels/${c.id}/test`,
+        "POST",
+        { expected_revision: c.revision },
+      );
+    } catch (e) {
+      if (ignoreAPIError(e)) return;
+      testError.value =
+        e instanceof Error ? e.message : "测试请求失败，请检查网络后重试";
+    } finally {
+      testingID.value = "";
+    }
     await props.reload();
   });
 }
@@ -194,6 +226,15 @@ async function remove(c: ModelChannel) {
             <td>
               <div class="row">
                 <button
+                  :aria-label="'测试 ' + c.name"
+                  @click="testConnection(c)"
+                  :disabled="busy"
+                >
+                  <AppIcon name="play" :size="16" />{{
+                    testingID === c.id ? "测试中…" : "测试"
+                  }}
+                </button>
+                <button
                   class="icon-button"
                   title="编辑通道"
                   :aria-label="'编辑 ' + c.name"
@@ -227,11 +268,74 @@ async function remove(c: ModelChannel) {
       </table>
     </div>
     <p class="muted small">
+      点击“测试”会按已保存配置发送一条固定文本，实际调用一次模型（可能产生上游费用），不使用缓存或切换其他通道；无需绑定策略，也可测试已停用的通道。这里只验证文本调用。
+    </p>
+    <p class="muted small">
       调用与失败统计从本服务进程启动开始累计；保存连接后重新学习健康状态。默认连续失败
       3 次冷却 30 分钟，可在“审核策略 →
       模型调度”中调整；单通道免除失败冷却，仍受并发和 RPM 限制。当前并发、RPM
       和健康协调适用于单进程部署。
     </p>
+  </section>
+  <section
+    v-if="testingID || testResult || testError"
+    class="panel channel-test-result"
+    aria-label="模型测试结果"
+    aria-live="polite"
+  >
+    <div class="panel-heading">
+      <h2>模型测试 · {{ testName }}</h2>
+      <span
+        class="badge"
+        :class="testingID ? 'gray' : testResult?.ok ? 'green' : 'red'"
+        >{{
+          testingID ? "测试中…" : testResult?.ok ? "测试成功" : "测试失败"
+        }}</span
+      >
+    </div>
+    <p v-if="testingID">
+      正在按已保存的地址、接口类型和模型名发起请求，请等待通道超时时限内的结果。
+    </p>
+    <p v-if="testError" class="banner error" role="alert">{{ testError }}</p>
+    <template v-if="testResult">
+      <p>
+        <strong>实际请求地址：</strong><code>{{ testResult.endpoint }}</code>
+      </p>
+      <p>
+        模型：<code>{{ testResult.model }}</code> · 接口：{{
+          testResult.api_format === "responses"
+            ? "/responses"
+            : "/chat/completions"
+        }}
+      </p>
+      <p>
+        耗时 {{ testResult.latency_ms }} ms · 超时
+        {{ testResult.timeout_ms }} ms · 最大输出
+        {{ testResult.max_tokens }} tokens ·
+        {{
+          testResult.http_status
+            ? "HTTP " + testResult.http_status
+            : "未收到 HTTP 响应"
+        }}
+      </p>
+      <p v-if="!testResult.attempted" class="hint">请求尚未发送到上游。</p>
+      <div v-if="!testResult.ok" class="banner error" role="alert">
+        <strong>{{ testResult.error_code }}</strong>
+        <p>{{ testResult.error_message }}</p>
+        <p v-if="testResult.hint">建议：{{ testResult.hint }}</p>
+      </div>
+      <p v-if="testResult.assessment">
+        模型回复：{{ testResult.assessment.reason }}（违规置信度
+        {{ testResult.assessment.confidence }}）
+      </p>
+      <p v-if="testResult.usage.reported">
+        用量：{{ testResult.usage.total_tokens }} tokens
+      </p>
+      <details v-if="testResult.model_output">
+        <summary>查看模型输出</summary>
+        <pre>{{ testResult.model_output }}</pre>
+      </details>
+    </template>
   </section>
   <section class="panel config-panel">
     <div class="panel-heading">
@@ -325,8 +429,8 @@ async function remove(c: ModelChannel) {
           "
           ><br />第三方接口按配置模型名对应的单价计费；配置单价后，文本请求可参与人民币预算。</template
         ><template v-if="connection.provider === 'grok_via_sub2api'"
-          ><br />Grok 使用 sub2api 标准 Responses
-          API。配置模型单价后，文本请求可参与人民币预算；无单价的调用费用需核对。</template
+          ><br />Grok 使用连接中选择的 API
+          接口类型。配置模型单价后，文本请求可参与人民币预算；无单价的调用费用需核对。</template
         >
       </p>
       <label class="check-row">
@@ -356,3 +460,12 @@ async function remove(c: ModelChannel) {
     </form>
   </section>
 </template>
+<style scoped>
+.channel-test-result {
+  overflow-wrap: anywhere;
+}
+.channel-test-result pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+</style>

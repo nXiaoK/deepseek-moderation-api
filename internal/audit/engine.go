@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -31,7 +33,21 @@ func NewEngine(concurrency int) *Engine {
 func upstreamCallError(err error, cfg PolicyConfig) error {
 	var ne net.Error
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
-		return problem(504, "upstream_timeout", cfg.providerLabel()+" 审核超时")
+		return problem(504, "upstream_timeout", cfg.providerLabel()+" 请求超时，请检查网络或增加通道超时时间")
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return problem(503, "upstream_unavailable", "API 域名 DNS 解析失败，请检查域名和服务器 DNS 配置")
+	}
+	var cert *tls.CertificateVerificationError
+	if errors.As(err, &cert) {
+		return problem(503, "upstream_unavailable", "API 的 TLS 证书验证失败，请检查证书有效期、域名和证书链")
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return problem(503, "upstream_unavailable", "API 连接被拒绝，请检查地址、端口及上游服务是否启动")
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) {
+		return problem(503, "upstream_unavailable", "上游提前断开连接，请检查网关、代理和所选 API 接口类型")
 	}
 	return problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 }
@@ -91,6 +107,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		return Assessment{}, attempt, "", upstreamCallError(err, cfg)
 	}
 	defer res.Body.Close()
+	recordUpstreamStatus(ctx, res.StatusCode)
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return Assessment{}, attempt, "", classifyUpstream(res, key)
@@ -138,6 +155,9 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		content = out.Choices[0].Message.Content
 	}
 	if decodeErr != nil || len(out.Choices) != 1 || out.Choices[0].Finish != "stop" || out.Choices[0].Message.Refusal != nil {
+		if decodeErr == nil && len(out.Choices) == 1 && out.Choices[0].Finish == "length" {
+			return Assessment{}, usage, content, problem(502, "invalid_model_response", "上游输出因 token 上限被截断（finish_reason=length），请增加最大输出 tokens")
+		}
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
 	assessment, err := ParseAssessment([]byte(content))
