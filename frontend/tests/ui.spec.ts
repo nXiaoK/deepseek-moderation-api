@@ -1134,6 +1134,7 @@ test("evaluation workbench starts a bounded comparison and exports results", asy
       const body = route.request().postDataJSON();
       expect(body.sample_ids).toEqual(["sample-1"]);
       expect(body.max_cost_cny).toBe("5");
+      expect(body.retries).toBe(3);
       expect(body.config.prompt).toBe(config.prompt);
       started = true;
       return route.fulfill({ status: 201, json: { id: "eval-1" } });
@@ -1173,6 +1174,10 @@ test("evaluation workbench starts a bounded comparison and exports results", asy
     page.getByRole("dialog", { name: "运行评测", exact: true }),
   ).toContainText("RPM 为 10 时至少间隔 8 秒");
   await page.getByLabel("评测名称", { exact: true }).fill("回归对照");
+  await expect(page.getByLabel("失败重试次数", { exact: true })).toHaveValue(
+    "2",
+  );
+  await page.getByLabel("失败重试次数", { exact: true }).fill("3");
   await page.getByRole("button", { name: "开始评测", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "通道对比", exact: true }),

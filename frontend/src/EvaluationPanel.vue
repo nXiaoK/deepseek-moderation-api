@@ -41,6 +41,7 @@ interface Result {
   expected: string;
   status: string;
   request_id: string;
+  request_ids?: string[];
   model: string;
   confidence: number | null;
   keyword_ignored?: boolean;
@@ -73,6 +74,7 @@ interface Detail {
   run: Run;
   config: Config;
   policy_revision: number;
+  retries?: number;
   targets: Record<string, string>;
   results: Result[];
   scores: Score[];
@@ -98,6 +100,7 @@ const runForm = ref<{
   policy_id: string;
   channel_ids: string[];
   repetitions: number;
+  retries: number;
   max_cost_cny: string;
   prompt: string;
   threshold: number;
@@ -173,6 +176,7 @@ const planned = computed(
 );
 const maxCalls = computed(
   () =>
+    ((runForm.value?.retries ?? 2) + 1) *
     selected.value.length *
     (runForm.value?.repetitions || 0) *
     (runForm.value?.channel_ids.reduce(
@@ -377,6 +381,7 @@ function newRun() {
     policy_id: p.id,
     channel_ids: [""],
     repetitions: 1,
+    retries: 2,
     max_cost_cny: "5",
     prompt: p.config.prompt,
     threshold: p.config.threshold,
@@ -404,6 +409,7 @@ async function startRun() {
         sample_ids: selected.value,
         channel_ids: f.channel_ids,
         repetitions: f.repetitions,
+        retries: f.retries,
         max_cost_cny: f.max_cost_cny,
       },
     );
@@ -838,11 +844,15 @@ onBeforeUnmount(() => {
                 </td>
                 <td>
                   <button
-                    v-if="row.request_id"
+                    v-for="(requestID, attempt) in row.request_ids ||
+                    (row.request_id ? [row.request_id] : [])"
+                    :key="requestID"
                     class="icon-button"
-                    title="查看审核记录"
-                    :aria-label="'查看请求 ' + row.request_id"
-                    @click="emit('log', row.request_id)"
+                    :title="
+                      attempt ? `查看第 ${attempt} 次重试记录` : '查看审核记录'
+                    "
+                    :aria-label="'查看请求 ' + requestID"
+                    @click="emit('log', requestID)"
                   >
                     <AppIcon name="file" :size="15" />
                   </button>
@@ -856,7 +866,8 @@ onBeforeUnmount(() => {
         <summary>评测配置快照</summary>
         <p class="muted small">
           阈值 {{ detail.config.threshold }} · 总调用时限
-          {{ detail.config.total_timeout_ms }} ms
+          {{ detail.config.total_timeout_ms }} ms · 失败最多重试
+          {{ detail.retries ?? 0 }} 次
         </p>
         <pre class="input-detail">{{ detail.config.prompt }}</pre>
       </details>
@@ -948,6 +959,13 @@ onBeforeUnmount(() => {
                 max="3"
                 required /></label
             ><label
+              >失败重试次数<input
+                v-model.number="runForm.retries"
+                type="number"
+                min="0"
+                max="5"
+                required /></label
+            ><label
               >费用上限（元）<input
                 v-model="runForm.max_cost_cny"
                 inputmode="decimal"
@@ -1002,7 +1020,9 @@ onBeforeUnmount(() => {
           <p class="hint">
             {{ selected.length }} 个样本 · {{ planned }} 次评测 · 最多
             {{ maxCalls }}
-            次模型调用。预算不足或费用待核对时停止后续评测；已发送调用按上游实际用量结算。
+            次模型调用（含重试）。失败后最多重试
+            {{ runForm.retries }}
+            次，仍失败则记录错误并继续下一条；重试遵守通道限速。待核对费用按预留金额占用预算，预算不足或记录/结算失败时停止；已发送调用按上游实际用量结算。
           </p>
           <p v-if="planned > 200" class="error">每次最多 200 次评测。</p>
           <p v-if="selected.length > 100" class="error">

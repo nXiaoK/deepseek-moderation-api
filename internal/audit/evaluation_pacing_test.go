@@ -104,6 +104,11 @@ func TestEvaluationTimeoutIncludesPacing(t *testing.T) {
 	if got := evaluationTimeout(plan); got != 30*time.Minute+200*8*time.Second {
 		t.Fatal("paced run retains fixed deadline", got)
 	}
+	plan.Retries = 2
+	if got := evaluationTimeout(plan); got != 30*time.Minute+600*8*time.Second+200*3*time.Second {
+		t.Fatal("retry pacing and backoff not included in timeout", got)
+	}
+	plan.Retries = 0
 	plan.Targets = []string{"a", "b"}
 	plan.Repetitions = 1
 	if got := evaluationTimeout(plan); got != 30*time.Minute+100*13*time.Second {

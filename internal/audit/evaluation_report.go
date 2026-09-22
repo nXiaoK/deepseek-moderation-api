@@ -46,23 +46,19 @@ func (s *Store) evaluationResults(ctx context.Context, id string) ([]EvaluationR
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, err
 		}
-		if item.RequestID != "" {
-			ids = append(ids, item.RequestID)
-		}
+		ids = append(ids, item.requestIDs()...)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
-	costs, err := s.requestCosts(ctx, ids)
+	costs, err := s.evaluationCosts(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
 	for i := range items {
-		if items[i].RequestID != "" {
-			items[i].Cost = keywordIgnoreCost(costs[items[i].RequestID], items[i].KeywordIgnored)
-		}
+		items[i].applyCosts(costs)
 	}
 	return items, nil
 }
@@ -84,8 +80,13 @@ func evaluationScores(results []EvaluationResult) ([]EvaluationScore, error) {
 		if result.Cost != nil {
 			if result.Cost.AmountCNY == nil {
 				group.score.PendingCosts++
-			} else {
-				amount, err := evaluationMoney(*result.Cost.AmountCNY)
+			}
+			known := result.KnownCostCNY
+			if known == "" && result.Cost.AmountCNY != nil {
+				known = *result.Cost.AmountCNY
+			}
+			if known != "" {
+				amount, err := evaluationMoney(known)
 				if err != nil {
 					return nil, err
 				}
@@ -160,7 +161,7 @@ func (s *Server) evaluationRunDetail(w http.ResponseWriter, r *http.Request) err
 	for _, c := range plan.Channels {
 		targets[c.ID] = c.Name + " · " + c.Model
 	}
-	return writeJSON(w, 200, map[string]any{"run": run, "config": plan.Policy.Config, "policy_revision": plan.Policy.Revision, "targets": targets, "results": results, "scores": scores})
+	return writeJSON(w, 200, map[string]any{"run": run, "config": plan.Policy.Config, "policy_revision": plan.Policy.Revision, "targets": targets, "retries": plan.Retries, "results": results, "scores": scores})
 }
 func (s *Server) evaluationRunSample(w http.ResponseWriter, r *http.Request) error {
 	_, plan, err := s.Store.evaluationRun(r.Context(), r.PathValue("id"))
@@ -200,7 +201,7 @@ func (s *Server) exportEvaluation(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	out := csv.NewWriter(w)
-	if err := out.Write([]string{"样本", "通道", "轮次", "预期", "状态", "实际命中", "评分", "阈值", "耗时(ms)", "已知费用(CNY)", "请求ID", "错误码"}); err != nil {
+	if err := out.Write([]string{"样本", "通道", "轮次", "预期", "状态", "实际命中", "评分", "阈值", "耗时(ms)", "已知费用(CNY)", "请求ID", "错误码", "重试次数", "所有请求ID"}); err != nil {
 		return err
 	}
 	for _, row := range results {
@@ -220,7 +221,7 @@ func (s *Server) exportEvaluation(w http.ResponseWriter, r *http.Request) error 
 		if row.KeywordIgnored && row.Status == "completed" {
 			status, flagged = "关键词忽略", "false"
 		}
-		cells := []string{row.SampleName, targets[row.Target], strconv.Itoa(row.Iteration), row.Expected, status, flagged, confidence, strconv.FormatFloat(row.Threshold, 'g', -1, 64), strconv.FormatInt(row.LatencyMS, 10), cost, row.RequestID, row.ErrorCode}
+		cells := []string{row.SampleName, targets[row.Target], strconv.Itoa(row.Iteration), row.Expected, status, flagged, confidence, strconv.FormatFloat(row.Threshold, 'g', -1, 64), strconv.FormatInt(row.LatencyMS, 10), cost, row.RequestID, row.ErrorCode, strconv.Itoa(max(0, len(row.requestIDs())-1)), strings.Join(row.requestIDs(), " ")}
 		for i := range cells {
 			cells[i] = csvCell(cells[i])
 		}

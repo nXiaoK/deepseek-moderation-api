@@ -34,9 +34,12 @@ type evaluationPlan struct {
 	Samples     []EvaluationSample `json:"samples"`
 	Targets     []string           `json:"targets"`
 	Repetitions int                `json:"repetitions"`
+	Retries     int                `json:"retries"`
 	MaxCost     int64              `json:"max_cost"`
 }
 type EvaluationResult struct {
+	RequestIDs     []string  `json:"request_ids,omitempty"`
+	KnownCostCNY   string    `json:"known_cost_cny,omitempty"`
 	KeywordIgnored bool      `json:"keyword_ignored,omitempty"`
 	Sequence       int       `json:"sequence"`
 	SampleID       string    `json:"sample_id"`
@@ -106,6 +109,7 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 		SampleIDs   []string        `json:"sample_ids"`
 		Targets     []string        `json:"channel_ids"`
 		Repetitions int             `json:"repetitions"`
+		Retries     *int            `json:"retries"`
 		MaxCostCNY  string          `json:"max_cost_cny"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
@@ -113,6 +117,13 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 	}
 	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || len(in.SampleIDs) < 1 || len(in.SampleIDs) > 100 || len(in.Targets) < 1 || len(in.Targets) > 4 || in.Repetitions < 1 || in.Repetitions > 3 || len(in.SampleIDs)*len(in.Targets)*in.Repetitions > 200 {
 		return problem(400, "invalid_evaluation", "名称不能为空；每次 1～100 个样本、1～4 个通道、1～3 轮，总次数最多 200")
+	}
+	retries := 2
+	if in.Retries != nil {
+		retries = *in.Retries
+	}
+	if retries < 0 || retries > 5 {
+		return problem(400, "invalid_evaluation", "失败重试次数须为 0～5 次")
 	}
 	maxCost, err := parseCNY(in.MaxCostCNY)
 	if err != nil {
@@ -122,7 +133,7 @@ func (s *Server) createEvaluationRun(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
-	plan := evaluationPlan{Policy: p, Channels: channels, Targets: in.Targets, Repetitions: in.Repetitions, MaxCost: maxCost}
+	plan := evaluationPlan{Policy: p, Channels: channels, Targets: in.Targets, Repetitions: in.Repetitions, Retries: retries, MaxCost: maxCost}
 	seen := map[string]bool{}
 	inputBytes := 0
 	for _, id := range in.SampleIDs {
@@ -362,122 +373,141 @@ func (s *Server) executeEvaluation(ctx context.Context, id, username string, pla
 	for _, sample := range plan.Samples {
 		for _, target := range plan.Targets {
 			for iteration := 1; iteration <= plan.Repetitions; iteration++ {
-				if ctx.Err() != nil {
-					s.finishEvaluation(id, "interrupted", "评测已停止")
-					return
-				}
-				var status string
-				if err := s.Store.DB.QueryRowContext(ctx, "SELECT status FROM evaluation_runs WHERE id=$1", id).Scan(&status); err != nil {
-					s.finishEvaluation(id, "interrupted", "评测状态读取失败")
-					return
-				}
-				if status != "running" {
-					s.finishEvaluation(id, status, "评测已停止")
-					return
-				}
-				estimate, err := s.estimateEvaluationTrial(ctx, plan, target, sample.Input)
-				if err != nil {
-					s.finishEvaluation(id, "interrupted", storedAuditError(err))
-					return
-				}
-				if new(big.Int).Add(spent, big.NewInt(estimate)).Cmp(big.NewInt(plan.MaxCost)) > 0 {
-					s.finishEvaluation(id, "budget_exhausted", "剩余评测预算不足以预留下一次调用")
-					return
-				}
-				for {
-					ok, err := s.Store.Rate(ctx, "evaluation:"+username, 30)
-					if err != nil {
-						s.finishEvaluation(id, "interrupted", "评测限流状态不可用")
+				var requestIDs []string
+				var latencyMS int64
+				for retry := 0; retry <= plan.Retries; retry++ {
+					if ctx.Err() != nil {
+						s.finishEvaluation(id, "interrupted", "评测已停止")
 						return
 					}
-					if ok {
+					var status string
+					if err := s.Store.DB.QueryRowContext(ctx, "SELECT status FROM evaluation_runs WHERE id=$1", id).Scan(&status); err != nil {
+						s.finishEvaluation(id, "interrupted", "评测状态读取失败")
+						return
+					}
+					if status != "running" {
+						s.finishEvaluation(id, status, "评测已停止")
+						return
+					}
+					estimate, err := s.estimateEvaluationTrial(ctx, plan, target, sample.Input)
+					if err != nil {
+						s.finishEvaluation(id, "interrupted", storedAuditError(err))
+						return
+					}
+					if new(big.Int).Add(spent, big.NewInt(estimate)).Cmp(big.NewInt(plan.MaxCost)) > 0 {
+						s.finishEvaluation(id, "budget_exhausted", "剩余评测预算不足以预留下一次调用")
+						return
+					}
+					for {
+						ok, err := s.Store.Rate(ctx, "evaluation:"+username, 30)
+						if err != nil {
+							s.finishEvaluation(id, "interrupted", "评测限流状态不可用")
+							return
+						}
+						if ok {
+							break
+						}
+						select {
+						case <-ctx.Done():
+							s.finishEvaluation(id, "interrupted", "评测已停止")
+							return
+						case <-time.After(time.Second):
+						}
+					}
+					delay := pacer.delay(plan, target, sample.Input, time.Now())
+					if retry > 0 {
+						delay = max(delay, time.Duration(retry)*time.Second)
+					}
+					if delay > 0 {
+						message := fmt.Sprintf("按通道 RPM 放慢评测，等待约 %.1f 秒", delay.Seconds())
+						if retry > 0 {
+							message = fmt.Sprintf("调用失败，等待约 %.1f 秒后重试（%d/%d）", delay.Seconds(), retry, plan.Retries)
+						}
+						if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message=$2 WHERE id=$1 AND status='running'", id, message); err != nil {
+							s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
+							return
+						}
+						if err := waitEvaluationDelay(ctx, delay); err != nil {
+							s.finishEvaluation(id, "interrupted", "评测已停止")
+							return
+						}
+						if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message='' WHERE id=$1 AND status='running'", id); err != nil {
+							s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
+							return
+						}
+					}
+					requestID := randomToken("audit_")
+					requestIDs = append(requestIDs, requestID)
+					progress, _ := json.Marshal(map[string]any{"request_id": requestID, "request_ids": requestIDs})
+					if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_results SET status='running',payload=$3 WHERE run_id=$1 AND sequence=$2", id, sequence, string(progress)); err != nil {
+						s.finishEvaluation(id, "interrupted", "评测进度保存失败")
+						return
+					}
+					trace := &requestAudit{days: plan.Policy.Config.RetentionDays, log: AuditLog{ID: requestID, CreatedAt: time.Now().UTC(), Request: &AuditRequest{Method: "POST", Path: "/admin/evaluation/runs/" + id, Stage: "audit", InputType: "text", TextChars: utf8.RuneCountInString(sample.Input)}}}
+					callCtx := context.WithValue(ctx, requestAuditKey{}, trace)
+					response, callErr := s.runAudit(callCtx, plan.Policy, plan.Channels, username, "test", sample.Input, target)
+					latencyMS += response.LatencyMS
+					result := EvaluationResult{RequestIDs: requestIDs, Sequence: sequence, SampleID: sample.ID, SampleName: sample.Name, Target: target, Iteration: iteration, Expected: sample.Expected, Status: "completed", RequestID: response.ID, Model: response.ActualModel, Threshold: plan.Policy.Config.Threshold, LatencyMS: latencyMS, Cost: response.Cost}
+					if callErr != nil {
+						result.Status = "error"
+						result.ErrorCode = errorCode(callErr)
+						result.ErrorMessage = storedAuditError(callErr)
+					} else if len(response.Results) == 1 {
+						verdict := response.Results[0]
+						result.Confidence = &verdict.Audit.Confidence
+						result.KeywordIgnored = verdict.Audit.KeywordIgnored
+						if result.KeywordIgnored {
+							result.Confidence = nil
+						}
+						result.Flagged = verdict.Flagged
+						result.Reason = verdict.Audit.Reason
+					}
+					raw, _ := json.Marshal(result)
+					completed := sequence
+					if callErr == nil || retry == plan.Retries {
+						completed++
+					}
+					writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					tx, err := s.Store.DB.BeginTx(writeCtx, nil)
+					if err == nil {
+						_, err = tx.ExecContext(writeCtx, "UPDATE evaluation_results SET status=$3,payload=$4 WHERE run_id=$1 AND sequence=$2", id, sequence, result.Status, string(raw))
+						if err == nil {
+							_, err = tx.ExecContext(writeCtx, "UPDATE evaluation_runs SET completed=$2 WHERE id=$1", id, completed)
+						}
+						if err == nil {
+							err = tx.Commit()
+						} else {
+							_ = tx.Rollback()
+						}
+					}
+					cancel()
+					if err != nil {
+						s.finishEvaluation(id, "interrupted", "评测结果保存失败")
+						return
+					}
+					// Pending usage keeps its reservation in the evaluation budget instead
+					// of aborting the whole run. Every retry has independent accounting.
+					costs, err := s.Store.evaluationCosts(ctx, []string{response.ID})
+					if err != nil {
+						s.finishEvaluation(id, "interrupted", "评测费用读取失败")
+						return
+					}
+					cost := costs[response.ID]
+					spent.Add(spent, cost.known)
+					spent.Add(spent, cost.held)
+					if spent.Cmp(big.NewInt(plan.MaxCost)) > 0 {
+						s.finishEvaluation(id, "budget_exhausted", "实际费用及待核对预留高于评测预算，已停止后续调用")
+						return
+					}
+					if callErr != nil && (strings.HasPrefix(errorCode(callErr), "cost_") || errorCode(callErr) == "record_unavailable") {
+						s.finishEvaluation(id, "interrupted", "记录或结算失败，已停止后续调用")
+						return
+					}
+					if callErr == nil || retry == plan.Retries {
 						break
 					}
-					select {
-					case <-ctx.Done():
-						s.finishEvaluation(id, "interrupted", "评测已停止")
-						return
-					case <-time.After(time.Second):
-					}
-				}
-				if delay := pacer.delay(plan, target, sample.Input, time.Now()); delay > 0 {
-					message := fmt.Sprintf("按通道 RPM 放慢评测，等待约 %.1f 秒", delay.Seconds())
-					if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message=$2 WHERE id=$1 AND status='running'", id, message); err != nil {
-						s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
-						return
-					}
-					if err := waitEvaluationDelay(ctx, delay); err != nil {
-						s.finishEvaluation(id, "interrupted", "评测已停止")
-						return
-					}
-					if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_runs SET message='' WHERE id=$1 AND status='running'", id); err != nil {
-						s.finishEvaluation(id, "interrupted", "评测等待状态保存失败")
-						return
-					}
-				}
-				requestID := randomToken("audit_")
-				if _, err := s.Store.DB.ExecContext(ctx, "UPDATE evaluation_results SET status='running',payload=jsonb_build_object('request_id',$3::text) WHERE run_id=$1 AND sequence=$2", id, sequence, requestID); err != nil {
-					s.finishEvaluation(id, "interrupted", "评测进度保存失败")
-					return
-				}
-				trace := &requestAudit{days: plan.Policy.Config.RetentionDays, log: AuditLog{ID: requestID, CreatedAt: time.Now().UTC(), Request: &AuditRequest{Method: "POST", Path: "/admin/evaluation/runs/" + id, Stage: "audit", InputType: "text", TextChars: utf8.RuneCountInString(sample.Input)}}}
-				callCtx := context.WithValue(ctx, requestAuditKey{}, trace)
-				response, callErr := s.runAudit(callCtx, plan.Policy, plan.Channels, username, "test", sample.Input, target)
-				result := EvaluationResult{Sequence: sequence, SampleID: sample.ID, SampleName: sample.Name, Target: target, Iteration: iteration, Expected: sample.Expected, Status: "completed", RequestID: response.ID, Model: response.ActualModel, Threshold: plan.Policy.Config.Threshold, LatencyMS: response.LatencyMS, Cost: response.Cost}
-				if callErr != nil {
-					result.Status = "error"
-					result.ErrorCode = errorCode(callErr)
-					result.ErrorMessage = storedAuditError(callErr)
-				} else if len(response.Results) == 1 {
-					verdict := response.Results[0]
-					result.Confidence = &verdict.Audit.Confidence
-					result.KeywordIgnored = verdict.Audit.KeywordIgnored
-					if result.KeywordIgnored {
-						result.Confidence = nil
-					}
-					result.Flagged = verdict.Flagged
-					result.Reason = verdict.Audit.Reason
-				}
-				raw, _ := json.Marshal(result)
-				writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				tx, err := s.Store.DB.BeginTx(writeCtx, nil)
-				if err == nil {
-					_, err = tx.ExecContext(writeCtx, "UPDATE evaluation_results SET status=$3,payload=$4 WHERE run_id=$1 AND sequence=$2", id, sequence, result.Status, string(raw))
-					if err == nil {
-						_, err = tx.ExecContext(writeCtx, "UPDATE evaluation_runs SET completed=completed+1 WHERE id=$1", id)
-					}
-					if err == nil {
-						err = tx.Commit()
-					} else {
-						_ = tx.Rollback()
-					}
-				}
-				cancel()
-				if err != nil {
-					s.finishEvaluation(id, "interrupted", "评测结果保存失败")
-					return
 				}
 				sequence++
-				if response.Cost != nil {
-					if response.Cost.AmountCNY == nil {
-						s.finishEvaluation(id, "pending_cost", "存在待核对费用，已停止后续调用")
-						return
-					}
-					amount, err := evaluationMoney(*response.Cost.AmountCNY)
-					if err != nil {
-						s.finishEvaluation(id, "interrupted", "费用金额无法解析")
-						return
-					}
-					spent.Add(spent, amount)
-					if spent.Cmp(big.NewInt(plan.MaxCost)) > 0 {
-						s.finishEvaluation(id, "budget_exhausted", "实际上游费用高于预留预算，已停止后续调用")
-						return
-					}
-				}
-				if callErr != nil && (strings.HasPrefix(errorCode(callErr), "cost_") || errorCode(callErr) == "record_unavailable") {
-					s.finishEvaluation(id, "interrupted", "记录或结算失败，已停止后续调用")
-					return
-				}
 			}
 		}
 	}

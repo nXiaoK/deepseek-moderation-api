@@ -69,7 +69,8 @@ func evaluationTimeout(plan evaluationPlan) time.Duration {
 		for _, c := range evaluationChannels(plan, target) {
 			interval = max(interval, evaluationInterval(c.RPM))
 		}
-		budget += interval * time.Duration(len(plan.Samples)*plan.Repetitions)
+		budget += interval * time.Duration(len(plan.Samples)*plan.Repetitions*(plan.Retries+1))
 	}
+	budget += time.Duration(len(plan.Samples)*len(plan.Targets)*plan.Repetitions*plan.Retries*(plan.Retries+1)/2) * time.Second
 	return budget
 }
