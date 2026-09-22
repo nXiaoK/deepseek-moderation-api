@@ -16,6 +16,7 @@ func TestSelectedAPIFormatControlsURLAndPayload(t *testing.T) {
 			for _, path := range []string{"", "/", "/api/v1", "/api/v1/", "/v1", "/custom%2Fprefix"} {
 				t.Run(provider+"/"+format+path, func(t *testing.T) {
 					cfg := DefaultConfig()
+					cfg.Model = "~deepseek/deepseek-v4-flash-latest"
 					cfg.Provider, cfg.APIFormat, cfg.BaseURL = provider, format, "https://api.cline.bot"+path
 					prefix := strings.TrimRight(path, "/")
 					if prefix == "" {
@@ -35,6 +36,9 @@ func TestSelectedAPIFormatControlsURLAndPayload(t *testing.T) {
 						var payload map[string]any
 						if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 							t.Fatal(err)
+						}
+						if payload["model"] != cfg.Model {
+							t.Fatal("model alias was changed", payload["model"])
 						}
 						if format == APIFormatResponses {
 							if payload["input"] == nil || payload["messages"] != nil || payload["stream"] != true || payload["max_output_tokens"] != float64(cfg.MaxTokens) {

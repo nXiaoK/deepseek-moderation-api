@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`)
+var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/~-]{1,100}$`)
 var policyAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`)
 
 type PolicyConfig struct {
@@ -41,7 +41,7 @@ func (c PolicyConfig) Validate() error {
 		return errors.New("阈值必须在 0～1 之间")
 	}
 	if !modelNamePattern.MatchString(c.Model) {
-		return errors.New("模型名称无效")
+		return errors.New("模型名称须为 1～100 个字符，支持字母、数字及 . _ : / ~ -")
 	}
 	if err := validateProviderURL(c.ProviderID(), c.BaseURL); err != nil {
 		return err
