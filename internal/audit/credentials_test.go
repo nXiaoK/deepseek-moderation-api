@@ -8,6 +8,68 @@ import (
 	"testing"
 )
 
+func TestEditCredentialAPIAddress(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	t.Setenv("AUDIT_SUB2API_ORIGINS", "https://old.test,https://new.test")
+	for _, provider := range []string{ProviderDeepSeek, ProviderGrok} {
+		t.Run(provider, func(t *testing.T) {
+			id, err := store.SaveProviderCredential(ctx, "admin", "", "editable", "original-test-key", true, provider, "https://old.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel := createTestChannel(t, store, id, "editable", "test-model")
+			cfg := DefaultConfig()
+			cfg.Provider, cfg.CredentialID, cfg.BaseURL = provider, id, "https://old.test"
+			for _, update := range []struct{ base, key, wantKey string }{
+				{"https://old.test/custom/api/", "", "original-test-key"},
+				{"https://new.test/proxy/v1", "replacement-test-key", "replacement-test-key"},
+				{"https://new.test/", "", "replacement-test-key"},
+			} {
+				if got, err := store.SaveProviderCredential(ctx, "admin", id, "edited", update.key, true, provider, update.base); err != nil || got != id {
+					t.Fatal("edit failed", got, err)
+				}
+				if _, err := store.CredentialForConfig(ctx, cfg); errorCode(err) != "credential_provider_mismatch" {
+					t.Fatal("stale endpoint still accepted", err)
+				}
+				cfg.BaseURL = normalizeProviderURL(update.base)
+				if key, err := store.CredentialForConfig(ctx, cfg); err != nil || key != update.wantKey {
+					t.Fatal("updated endpoint or secret incorrect", err)
+				}
+				channels, err := store.Channels(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, current := range channels {
+					if current.ID == channel.ID {
+						found = true
+						if current.BaseURL != cfg.BaseURL || current.Revision != channel.Revision+1 || current.CacheEpoch == channel.CacheEpoch {
+							t.Fatal("channel endpoint, revision or cache epoch not refreshed", current)
+						}
+						channel = current
+					}
+				}
+				if !found {
+					t.Fatal("bound channel missing")
+				}
+			}
+			invalid := []string{"https://user:secret@new.test/api", "https://new.test/api?key=secret", "https://new.test/api#fragment"}
+			if provider == ProviderGrok {
+				invalid = append(invalid, "https://unapproved.test/api")
+			}
+			for _, base := range invalid {
+				if _, err := store.SaveProviderCredential(ctx, "admin", id, "invalid", "", true, provider, base); errorCode(err) != "invalid_connection" {
+					t.Fatal("invalid edit accepted", base, err)
+				}
+			}
+			if key, err := store.CredentialForConfig(ctx, cfg); err != nil || key != "replacement-test-key" {
+				t.Fatal("rejected edit changed credential", err)
+			}
+		})
+	}
+}
+
 func TestDeleteCredentialAuthorizationAndLifecycle(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

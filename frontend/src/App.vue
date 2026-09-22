@@ -490,7 +490,9 @@ async function saveCredential() {
         base_url: credentialBaseURL.value,
         name: credentialName.value,
         api_key: credentialSecret.value,
-        active: true,
+        active:
+          credentials.value.find((c) => c.id === credentialEditID.value)
+            ?.active ?? true,
       },
     );
     credentials.value = await api("/admin/credentials");
@@ -1065,7 +1067,7 @@ window.addEventListener("beforeunload", (e) => {
             <section class="panel">
               <div class="panel-heading">
                 <h2>
-                  {{ credentialEditID ? "替换模型密钥" : "添加模型密钥" }}
+                  {{ credentialEditID ? "编辑连接密钥" : "添加模型密钥" }}
                 </h2>
               </div>
               <form class="stack-form" @submit.prevent="saveCredential">
@@ -1092,7 +1094,6 @@ window.addEventListener("beforeunload", (e) => {
                     v-model="credentialBaseURL"
                     type="url"
                     required
-                    :readonly="!!credentialEditID"
                     :placeholder="
                       credentialProvider === 'deepseek'
                         ? 'https://api.deepseek.com 或 https://api.example.com/v1/chat/completions'
@@ -1109,7 +1110,8 @@ window.addEventListener("beforeunload", (e) => {
                       AUDIT_SUB2API_ORIGINS
                       需允许此地址的源地址（协议和域名端口），sub2api
                       无需新增配置。</template
-                    >凭证保存后地址固定，换地址请新建连接。</small
+                    >已有连接可修改 API
+                    地址，保存后关联模型通道自动使用新地址。</small
                   ></label
                 >
                 <label
@@ -1127,8 +1129,8 @@ window.addEventListener("beforeunload", (e) => {
                     v-model="credentialSecret"
                     type="password"
                     autocomplete="off"
-                    placeholder="sk-…"
-                    required
+                    :placeholder="credentialEditID ? '留空保留原密钥' : 'sk-…'"
+                    :required="!credentialEditID"
                     minlength="8"
                     maxlength="512" /></label
                 ><button class="primary" :disabled="busy">
@@ -1142,10 +1144,10 @@ window.addEventListener("beforeunload", (e) => {
                     credentialSecret = '';
                   "
                 >
-                  取消替换
+                  取消编辑
                 </button>
                 <p class="muted small">
-                  密钥只在创建或替换时输入，保存后仅显示掩码。
+                  编辑时 API Key 留空保留原密钥，填写则替换；保存后仅显示掩码。
                 </p>
               </form>
             </section>
@@ -1183,7 +1185,7 @@ window.addEventListener("beforeunload", (e) => {
                     "
                     :disabled="busy"
                   >
-                    替换</button
+                    编辑</button
                   ><button @click="toggleCredential(c)" :disabled="busy">
                     {{ c.active ? "停用" : "启用" }}
                   </button>

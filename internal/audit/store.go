@@ -306,13 +306,13 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 	}
 	err := s.mutate(ctx, actor, "credential.update", id, func(tx *sql.Tx) error {
 		if !create {
-			var oldProvider, oldURL string
-			err := tx.QueryRowContext(ctx, "SELECT provider,base_url FROM provider_credentials WHERE id=$1 FOR UPDATE", id).Scan(&oldProvider, &oldURL)
+			var oldProvider string
+			err := tx.QueryRowContext(ctx, "SELECT provider FROM provider_credentials WHERE id=$1 FOR UPDATE", id).Scan(&oldProvider)
 			if err != nil {
 				return err
 			}
-			if oldProvider != provider || normalizeProviderURL(oldURL) != baseURL {
-				return problem(400, "credential_binding_immutable", "修改供应商或连接地址需创建新凭证，防止原密钥发送到其他目标")
+			if oldProvider != provider {
+				return problem(400, "credential_binding_immutable", "修改供应商需创建新凭证")
 			}
 		}
 		if create {
@@ -322,9 +322,9 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 		var result sql.Result
 		var err error
 		if key != "" {
-			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,masked=$2,encrypted=$3,active=$4 WHERE id=$5", name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, id)
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,masked=$2,encrypted=$3,active=$4,base_url=$6 WHERE id=$5", name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, id, baseURL)
 		} else {
-			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,active=$2 WHERE id=$3", name, active, id)
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,active=$2,base_url=$4 WHERE id=$3", name, active, id, baseURL)
 		}
 		if err != nil {
 			return err

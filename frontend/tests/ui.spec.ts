@@ -613,6 +613,64 @@ test("small costs retain decimals and isolated latency samples remain visible", 
     .toBeGreaterThan(15);
 });
 
+for (const provider of ["deepseek", "grok_via_sub2api"]) {
+  test(`connection credential API address can be edited without replacing the key: ${provider}`, async ({
+    page,
+  }) => {
+    const credential = {
+      id: "editable",
+      name: "可编辑连接",
+      provider,
+      base_url: "https://old.example.com",
+      masked: "••••test",
+      active: false,
+    };
+    await page.route("**/admin/credentials", (route) =>
+      route.fulfill({ json: [credential] }),
+    );
+    let saves = 0;
+    await page.route("**/admin/credentials/editable", (route) => {
+      expect(route.request().method()).toBe("PUT");
+      const body = route.request().postDataJSON();
+      expect(body).toEqual({
+        provider,
+        name: credential.name,
+        base_url: "https://new.example.com/proxy/v1/responses/",
+        api_key: saves === 0 ? "" : "replacement-test-key",
+        active: false,
+      });
+      credential.base_url = body.base_url;
+      saves++;
+      return route.fulfill({ json: { id: credential.id } });
+    });
+    await page.goto("/");
+    await navigate(page, "连接密钥");
+    const label = provider === "deepseek" ? "DeepSeek" : "sub2api";
+    for (const key of ["", "replacement-test-key"]) {
+      await page.getByRole("button", { name: "编辑", exact: true }).click();
+      await expect(
+        page.getByRole("heading", { name: "编辑连接密钥" }),
+      ).toBeVisible();
+      const address = page
+        .locator("label")
+        .filter({ hasText: `${label} API 地址` })
+        .locator('input[type="url"]');
+      await expect(address).toBeEditable();
+      await address.fill("https://new.example.com/proxy/v1/responses/");
+      await page.getByLabel(`${label} API Key`, { exact: true }).fill(key);
+      await page.getByRole("button", { name: "加密保存" }).click();
+      await expect(
+        page.getByRole("heading", { name: "添加模型密钥" }),
+      ).toBeVisible();
+      await expect(page.locator(".credential-row")).toContainText(
+        credential.base_url,
+      );
+      await expect(page.locator(".credential-row")).toContainText("已停用");
+    }
+    expect(saves).toBe(2);
+  });
+}
+
 test("connection credential deletion confirms, cancels and clears the edited entry", async ({
   page,
 }) => {
@@ -646,9 +704,9 @@ test("connection credential deletion confirms, cancels and clears the edited ent
   await remove.click();
   await expect(remove).toBeVisible();
   expect(deletes).toBe(0);
-  await page.getByRole("button", { name: "替换", exact: true }).click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "替换模型密钥" }),
+    page.getByRole("heading", { name: "编辑连接密钥" }),
   ).toBeVisible();
   await page
     .getByLabel("DeepSeek API Key", { exact: true })

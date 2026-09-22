@@ -268,11 +268,12 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	var inferenceCalls atomic.Int32
+	wantPath := "/v1/responses"
 	app.Engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		headers := http.Header{}
 		code := 200
 		var raw []byte
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+		if r.Method != http.MethodPost || r.URL.Path != wantPath {
 			t.Fatal("inference must not require an auth or capability endpoint", r.Method, r.URL.Path)
 		}
 		inferenceCalls.Add(1)
@@ -299,6 +300,14 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if err != nil || !res.CacheHit || inferenceCalls.Load() != 1 {
 		t.Fatal("Grok cache failed", err)
 	}
+	wantPath = "/proxy/v2/responses"
+	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", true, ProviderGrok, "https://sub2api.test"+wantPath); err != nil {
+		t.Fatal(err)
+	}
+	res, err = runTestAudit(t, app, p, key.ID, "production", "hello")
+	if err != nil || res.CacheHit || inferenceCalls.Load() != 2 {
+		t.Fatal("updated endpoint reused cached verdict or failed to route", res, err)
+	}
 	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", false, ProviderGrok, "https://sub2api.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +320,7 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if _, err = store.DB.Exec("INSERT INTO client_budgets(client_id,monthly_limit) VALUES($1,1000000000000)", key.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = runTestAudit(t, app, p, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 1 {
+	if _, err = runTestAudit(t, app, p, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 2 {
 		t.Fatal("monetary budget silently bypassed for unpriced Grok")
 	}
 	request := httptest.NewRequest("GET", "/admin/billing/costs", nil)
@@ -454,17 +463,11 @@ func TestDeepSeekThirdPartyCredentialBindingAndCost(t *testing.T) {
 		if _, err := store.CredentialForConfig(ctx, wrong); err == nil {
 			t.Fatal("credential crossed endpoint path", base)
 		}
-		if _, err := store.SaveProviderCredential(ctx, "admin", cred, "third-party", "", true, ProviderDeepSeek, base); err == nil {
-			t.Fatal("saved endpoint path was changed", base)
-		}
 	}
 	wrong := cfg
 	wrong.BaseURL = "https://other-gateway.test"
 	if _, err = store.CredentialForConfig(ctx, wrong); err == nil {
 		t.Fatal("credential crossed origin")
-	}
-	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "third-party", "", true, ProviderDeepSeek, "https://other-gateway.test"); err == nil {
-		t.Fatal("saved origin was changed")
 	}
 	p, _ := store.Policy(ctx, "abuse-default")
 	entry, err := store.ReserveCost(ctx, randomToken("cost_"), "admin", "test", p, cfg, "hello", false, time.Now())
