@@ -559,6 +559,9 @@ onMounted(refresh);
           <AppIcon name="plus" :size="16" />添加模型单价
         </button>
       </div>
+      <p class="muted small">
+        精确模型名称优先；未匹配时使用模型名中包含的通用名称（忽略大小写）。多个名称命中时优先使用更长的名称，同名规则优先使用连接级单价。
+      </p>
       <section v-for="p in prices" :key="p.id" class="panel">
         <div class="panel-heading">
           <div>
@@ -700,8 +703,14 @@ onMounted(refresh);
             >模型名称<input
               v-model="priceForm.model"
               :readonly="!!priceForm.expected_price_id"
+              placeholder="具体模型名或通用名称，如 deepseek"
+              aria-describedby="price-model-hint"
               required
           /></label>
+          <p id="price-model-hint" class="muted small">
+            例如填写 deepseek，可在没有精确单价时匹配 deepseek-v4-flush 或
+            deepseek/deepseek-v4-flush。无需填写通配符；多个通用名称命中时优先使用更长的名称。
+          </p>
           <div class="form-grid price-form">
             <template v-for="[key, label] in rateLabels" :key="key"
               ><label

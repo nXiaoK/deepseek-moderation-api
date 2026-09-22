@@ -914,7 +914,7 @@ test("audit log search sends request and channel filters", async ({ page }) => {
   expect(query.get("page")).toBe("1");
 });
 
-test("connection-specific model prices can be saved and reset", async ({
+test("connection-specific generic model prices can be saved and reset", async ({
   page,
 }) => {
   let saved: Record<string, unknown> | undefined;
@@ -925,7 +925,7 @@ test("connection-specific model prices can be saved and reset", async ({
       json: [
         {
           id: 3,
-          model: "custom-model",
+          model: "deepseek",
           credential_id: "credential-1",
           rates: {
             off_hit: 0,
@@ -953,22 +953,23 @@ test("connection-specific model prices can be saved and reset", async ({
   await page
     .getByRole("combobox", { name: "计价范围", exact: true })
     .selectOption("credential-1");
-  await page.getByLabel("模型名称", { exact: true }).fill("custom-model");
+  await page.getByLabel("模型名称", { exact: true }).fill("deepseek");
   await page
     .getByLabel("价格来源 / 变更依据", { exact: true })
     .fill("test tariff");
   await page.getByRole("button", { name: "保存单价", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(saved?.credential_id).toBe("credential-1");
+  expect(saved?.model).toBe("deepseek");
   await expect(
-    page.getByRole("heading", { name: "custom-model", exact: true }),
+    page.getByRole("heading", { name: "deepseek", exact: true }),
   ).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByRole("button", { name: "恢复模型默认价格", exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: "custom-model", exact: true }),
+    page.getByRole("heading", { name: "deepseek", exact: true }),
   ).toHaveCount(0);
   expect(reset).toBe(true);
 });

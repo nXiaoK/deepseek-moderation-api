@@ -74,11 +74,9 @@ func (s *Store) routeResources(ctx context.Context, channels []ModelChannel, wit
 WITH requested(model,credential_id) AS (
  SELECT * FROM unnest($1::text[],$2::text[])
 )
-SELECT DISTINCT ON(r.model,r.credential_id) r.model,r.credential_id
+SELECT r.model,r.credential_id
 FROM requested r
-JOIN model_prices p ON p.model=r.model AND p.credential_id IN ('',r.credential_id)
-WHERE p.active AND p.effective_at<=$3
-ORDER BY r.model,r.credential_id,(p.credential_id<>'') DESC,p.effective_at DESC,p.id DESC`, pq.Array(priceModels), pq.Array(priceCredentials), at)
+CROSS JOIN LATERAL (`+matchingPriceSQL+`) price`, pq.Array(priceModels), pq.Array(priceCredentials), at)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -60,7 +60,7 @@ func (s *Store) Price(ctx context.Context, model string, at time.Time) (*PriceCa
 func (s *Store) ConnectionPrice(ctx context.Context, model, credential string, at time.Time) (*PriceCard, error) {
 	var c PriceCard
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT id,model,rates,source,effective_at,credential_id FROM (SELECT DISTINCT ON(credential_id) * FROM model_prices WHERE model=$1 AND credential_id IN ('',$3) AND effective_at<=$2 ORDER BY credential_id,effective_at DESC,id DESC) latest WHERE active ORDER BY (credential_id<>'') DESC LIMIT 1`, canonicalPriceModel(model), at, credential).Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt, &c.CredentialID)
+	err := s.DB.QueryRowContext(ctx, `WITH requested(model,credential_id) AS (VALUES($1::text,$2::text)) SELECT price.* FROM requested r CROSS JOIN LATERAL (`+matchingPriceSQL+`) price`, canonicalPriceModel(model), credential, at).Scan(&c.ID, &c.Model, &raw, &c.Source, &c.EffectiveAt, &c.CredentialID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

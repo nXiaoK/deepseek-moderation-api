@@ -90,7 +90,7 @@ func parseCNY(s string) (int64, error) {
 	return whole*picoPerCNY + tail, nil
 }
 func canonicalPriceModel(model string) string {
-	switch model {
+	switch strings.ToLower(model) {
 	case "deepseek-v4-flash", "deepseek-v4-flash-vision-exp":
 		return "deepseek-flash"
 	}
