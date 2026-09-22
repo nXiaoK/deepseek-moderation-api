@@ -9,6 +9,7 @@ import {
   watch,
 } from "vue";
 import AppIcon from "./AppIcon.vue";
+import Pagination from "./Pagination.vue";
 import BillingPanel from "./BillingPanel.vue";
 import PolicyEditor from "./PolicyEditor.vue";
 import PolicyTools from "./PolicyTools.vue";
@@ -193,6 +194,7 @@ function editKey(key: ClientKey) {
 const logItems = ref<AuditLog[]>([]),
   logTotal = ref(0),
   logPage = ref(1),
+  logPageSize = ref(20),
   logKind = ref(""),
   logResult = ref(""),
   logKeywordIgnore = ref("exclude"),
@@ -635,10 +637,10 @@ async function copyToken() {
     error.value = "复制失败，请选中密钥手动复制。";
   }
 }
-function logQuery() {
+function logQuery(page = logPage.value, pageSize = logPageSize.value) {
   const q = new URLSearchParams({
-    page: String(logPage.value),
-    page_size: "20",
+    page: String(page),
+    page_size: String(pageSize),
     request_id: logRequestID.value.trim(),
     model: logModel.value,
     channel_id: logChannel.value,
@@ -659,17 +661,34 @@ async function exportAuditLogs() {
     downloadFile("/admin/audit-logs/export?" + logQuery(), "audit-records.csv"),
   );
 }
-async function loadLogs() {
-  const q = logQuery();
-  const data = await api<{ items: AuditLog[]; total: number }>(
-    `/admin/audit-logs?${q}`,
-  );
-  logItems.value = data.items;
-  logTotal.value = data.total;
+async function loadLogs(
+  targetPage = logPage.value,
+  pageSize = logPageSize.value,
+) {
+  const q = logQuery(targetPage, pageSize);
+  // Retention cleanup can shrink the result set while browsing older pages.
+  for (;;) {
+    q.set("page", String(targetPage));
+    const data = await api<{ items: AuditLog[]; total: number }>(
+      `/admin/audit-logs?${q}`,
+    );
+    const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
+    if (targetPage > lastPage) {
+      targetPage = lastPage;
+      continue;
+    }
+    logItems.value = data.items;
+    logTotal.value = data.total;
+    logPage.value = targetPage;
+    logPageSize.value = pageSize;
+    return;
+  }
+}
+async function changeLogPage(page: number, pageSize: number) {
+  await run(() => loadLogs(page, pageSize));
 }
 async function filterLogs() {
-  logPage.value = 1;
-  await run(loadLogs);
+  await run(() => loadLogs(1));
 }
 async function openLog(id: string) {
   await run(async () => {
@@ -1570,35 +1589,13 @@ window.addEventListener("beforeunload", (e) => {
             <div v-if="!logItems.length" class="empty">
               没有符合条件的审核记录。
             </div>
-            <div class="pagination">
-              <span>共 {{ logTotal }} 条</span>
-              <div class="row">
-                <button
-                  class="icon-button"
-                  title="上一页"
-                  aria-label="上一页"
-                  :disabled="busy || logPage <= 1"
-                  @click="
-                    logPage--;
-                    run(loadLogs);
-                  "
-                >
-                  <AppIcon name="back" :size="16" /></button
-                ><span>{{ logPage }}</span
-                ><button
-                  class="icon-button"
-                  title="下一页"
-                  aria-label="下一页"
-                  :disabled="busy || logPage * 20 >= logTotal"
-                  @click="
-                    logPage++;
-                    run(loadLogs);
-                  "
-                >
-                  <AppIcon name="next" :size="16" />
-                </button>
-              </div>
-            </div></section
+            <Pagination
+              :page="logPage"
+              :page-size="logPageSize"
+              :total="logTotal"
+              :busy="busy"
+              @change="changeLogPage"
+            /></section
         ></template>
 
         <template v-if="page === 'settings'"

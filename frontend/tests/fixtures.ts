@@ -92,7 +92,7 @@ const cost = {
   note: "按请求时价格计费",
   price_id: 1,
 };
-const log = {
+export const log = {
   id: "audit-1",
   kind: "production",
   policy_id: "policy-1",
