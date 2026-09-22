@@ -56,10 +56,13 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
-	if cfg.ProviderID() == ProviderGrok {
+	if cfg.apiFormat() == APIFormatResponses {
 		return e.assessGrok(ctx, cfg, key, input, images...)
 	}
-	payload := map[string]any{"model": cfg.Model, "stream": false, "thinking": map[string]string{"type": "disabled"}, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	payload := map[string]any{"model": cfg.Model, "stream": false, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	if cfg.APIFormat == "" || cfg.officialPricing() {
+		payload["thinking"] = map[string]string{"type": "disabled"}
+	}
 	// Sampling controls are optional and some third-party model backends reject
 	// them even at zero. Keep the existing setting only for official DeepSeek.
 	if cfg.officialPricing() {

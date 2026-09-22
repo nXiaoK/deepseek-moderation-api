@@ -162,7 +162,10 @@ const creating = ref(false),
   newAlias = ref(""),
   copySource = ref("");
 const credentialProvider = ref<Provider>("deepseek"),
-  credentialBaseURL = ref("https://api.deepseek.com");
+  credentialBaseURL = ref("https://api.deepseek.com"),
+  credentialAPIFormat = ref<"" | "responses" | "chat_completions">(
+    "chat_completions",
+  );
 const credentialName = ref(""),
   credentialSecret = ref(""),
   credentialEditID = ref("");
@@ -378,6 +381,8 @@ function clearSession() {
   newToken.value = "";
   credentialSecret.value = "";
   credentialEditID.value = "";
+  credentialAPIFormat.value =
+    credentialProvider.value === "deepseek" ? "chat_completions" : "responses";
   credentialName.value = "";
   currentPassword.value = "";
   newPassword.value = "";
@@ -488,6 +493,7 @@ async function saveCredential() {
       {
         provider: credentialProvider.value,
         base_url: credentialBaseURL.value,
+        api_format: credentialAPIFormat.value,
         name: credentialName.value,
         api_key: credentialSecret.value,
         active:
@@ -497,6 +503,10 @@ async function saveCredential() {
     );
     credentials.value = await api("/admin/credentials");
     credentialEditID.value = "";
+    credentialAPIFormat.value =
+      credentialProvider.value === "deepseek"
+        ? "chat_completions"
+        : "responses";
     credentialName.value = "";
     credentialSecret.value = "";
     notice.value = "模型密钥已加密保存。";
@@ -507,6 +517,7 @@ async function toggleCredential(c: Credential) {
     await api(`/admin/credentials/${c.id}`, "PUT", {
       provider: c.provider,
       base_url: c.base_url,
+      api_format: c.api_format ?? "",
       name: c.name,
       api_key: "",
       active: !c.active,
@@ -528,6 +539,10 @@ async function deleteCredential(c: Credential) {
     credentials.value = credentials.value.filter((item) => item.id !== c.id);
     if (credentialEditID.value === c.id) {
       credentialEditID.value = "";
+      credentialAPIFormat.value =
+        credentialProvider.value === "deepseek"
+          ? "chat_completions"
+          : "responses";
       credentialName.value = "";
       credentialSecret.value = "";
     }
@@ -1079,7 +1094,11 @@ window.addEventListener("beforeunload", (e) => {
                       credentialBaseURL =
                         credentialProvider === 'deepseek'
                           ? 'https://api.deepseek.com'
-                          : ''
+                          : '';
+                      credentialAPIFormat =
+                        credentialProvider === 'deepseek'
+                          ? 'chat_completions'
+                          : 'responses';
                     "
                   >
                     <option value="deepseek">DeepSeek（官方 / 第三方）</option>
@@ -1096,24 +1115,44 @@ window.addEventListener("beforeunload", (e) => {
                     required
                     :placeholder="
                       credentialProvider === 'deepseek'
-                        ? 'https://api.deepseek.com 或 https://api.example.com/v1/chat/completions'
-                        : 'https://sub2api.example.com'
+                        ? 'https://api.deepseek.com 或 https://api.cline.bot/api/v1'
+                        : 'https://sub2api.example.com/v1'
                     "
-                  /><small class="muted"
-                    ><template v-if="credentialProvider === 'deepseek'"
-                      >支持官方地址或兼容 Chat Completions 的第三方 HTTP(S)
-                      接口。仅填根地址时自动补全接口路径（第三方为
-                      /v1/chat/completions）；填写具体路径时原样调用，不再追加后缀。</template
-                    ><template v-else
-                      >仅填根地址时自动调用
-                      /v1/responses；填写具体路径时原样调用。 审核系统的
-                      AUDIT_SUB2API_ORIGINS
-                      需允许此地址的源地址（协议和域名端口），sub2api
-                      无需新增配置。</template
-                    >已有连接可修改 API
-                    地址，保存后关联模型通道自动使用新地址。</small
-                  ></label
+                  /><small class="muted">
+                    填写 API 基础地址，例如
+                    https://api.cline.bot/api/v1，系统在其后追加所选接口路径。仅填根地址时自动补全默认版本路径。
+                    <template v-if="credentialProvider === 'grok_via_sub2api'"
+                      >服务器 AUDIT_SUB2API_ORIGINS
+                      需允许此源地址（协议、域名和端口）。</template
+                    >
+                    已有连接可修改地址和接口类型，保存后关联模型通道自动更新。
+                  </small></label
                 >
+                <label
+                  >API 接口类型<select
+                    v-model="credentialAPIFormat"
+                    :disabled="busy"
+                  >
+                    <option
+                      v-if="
+                        credentialEditID &&
+                        credentials.find((c) => c.id === credentialEditID)
+                          ?.api_format !== 'responses' &&
+                        credentials.find((c) => c.id === credentialEditID)
+                          ?.api_format !== 'chat_completions'
+                      "
+                      value=""
+                    >
+                      保持原调用方式（旧连接）
+                    </option>
+                    <option value="responses">/responses</option>
+                    <option value="chat_completions">/chat/completions</option>
+                  </select>
+                  <small v-if="credentialAPIFormat === ''" class="muted"
+                    >保留旧连接的地址与请求格式。改选接口类型时，请将上方地址填写为基础地址，不包含
+                    /responses 或 /chat/completions。</small
+                  >
+                </label>
                 <label
                   >名称<input
                     v-model="credentialName"
@@ -1140,6 +1179,10 @@ window.addEventListener("beforeunload", (e) => {
                   type="button"
                   @click="
                     credentialEditID = '';
+                    credentialAPIFormat =
+                      credentialProvider === 'deepseek'
+                        ? 'chat_completions'
+                        : 'responses';
                     credentialName = '';
                     credentialSecret = '';
                   "
@@ -1166,6 +1209,14 @@ window.addEventListener("beforeunload", (e) => {
                         : "DeepSeek"
                     }}
                     · {{ c.base_url }}
+                    <span v-if="c.api_format">
+                      ·
+                      {{
+                        c.api_format === "responses"
+                          ? "/responses"
+                          : "/chat/completions"
+                      }}</span
+                    >
                   </p>
                   <p>
                     <code>{{ c.masked }}</code
@@ -1181,6 +1232,7 @@ window.addEventListener("beforeunload", (e) => {
                       credentialName = c.name;
                       credentialProvider = c.provider;
                       credentialBaseURL = c.base_url;
+                      credentialAPIFormat = c.api_format ?? '';
                       credentialSecret = '';
                     "
                     :disabled="busy"

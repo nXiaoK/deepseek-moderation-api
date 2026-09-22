@@ -17,6 +17,26 @@ import (
 const ProviderDeepSeek = "deepseek"
 const ProviderGrok = "grok_via_sub2api"
 
+const APIFormatResponses = "responses"
+const APIFormatChatCompletions = "chat_completions"
+
+func validateAPIFormat(format string) error {
+	if format != "" && format != APIFormatResponses && format != APIFormatChatCompletions {
+		return errors.New("API 接口类型必须为 /responses 或 /chat/completions")
+	}
+	return nil
+}
+
+func (c PolicyConfig) apiFormat() string {
+	if c.APIFormat != "" {
+		return c.APIFormat
+	}
+	if c.ProviderID() == ProviderGrok {
+		return APIFormatResponses
+	}
+	return APIFormatChatCompletions
+}
+
 func (c PolicyConfig) ProviderID() string {
 	if c.Provider == "" {
 		return ProviderDeepSeek
@@ -72,6 +92,16 @@ func providerOrigin(base string) string {
 func (c PolicyConfig) inferenceURL() string {
 	base := normalizeProviderURL(c.BaseURL)
 	u, err := url.Parse(base)
+	if c.APIFormat != "" && err == nil {
+		if u.EscapedPath() == "" && !(base == "https://api.deepseek.com" && c.APIFormat == APIFormatChatCompletions) {
+			base += "/v1"
+		}
+		suffix := "/chat/completions"
+		if c.APIFormat == APIFormatResponses {
+			suffix = "/responses"
+		}
+		return strings.TrimRight(base, "/") + suffix
+	}
 	if err != nil || u.EscapedPath() != "" {
 		return base
 	}
@@ -127,7 +157,9 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 		"max_output_tokens": cfg.MaxTokens,
 		"instructions":      cfg.Prompt,
 		"text":              map[string]any{"format": map[string]string{"type": "json_object"}},
-		"reasoning":         map[string]string{"effort": "none"},
+	}
+	if cfg.ProviderID() == ProviderGrok {
+		payload["reasoning"] = map[string]string{"effort": "none"}
 	}
 	if len(images) > 0 {
 		content := []map[string]any{{"type": "input_text", "text": "<user_input>" + input + "</user_input>"}}
@@ -392,8 +424,17 @@ func (e *Engine) ProbeGrok(ctx context.Context, cfg PolicyConfig, key string) (*
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	// Model discovery is optional and always uses the origin's standard endpoint.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerOrigin(cfg.BaseURL)+"/v1/models", nil)
+	modelsURL := providerOrigin(cfg.BaseURL) + "/v1/models"
+	if cfg.APIFormat != "" {
+		// Explicit formats use a base URL, so discovery shares its path prefix.
+		endpoint := cfg.inferenceURL()
+		if cfg.apiFormat() == APIFormatResponses {
+			modelsURL = strings.TrimSuffix(endpoint, "/responses") + "/models"
+		} else {
+			modelsURL = strings.TrimSuffix(endpoint, "/chat/completions") + "/models"
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		return nil, err
 	}

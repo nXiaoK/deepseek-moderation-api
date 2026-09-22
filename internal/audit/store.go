@@ -264,7 +264,7 @@ func (s *Store) SetPolicyState(ctx context.Context, actor, id string, revision i
 	})
 }
 func (s *Store) Credentials(ctx context.Context) ([]Credential, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,masked,active,provider,base_url FROM provider_credentials ORDER BY name,id")
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,name,masked,active,provider,base_url,api_format FROM provider_credentials ORDER BY name,id")
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *Store) Credentials(ctx context.Context) ([]Credential, error) {
 	items := []Credential{}
 	for rows.Next() {
 		var c Credential
-		if err = rows.Scan(&c.ID, &c.Name, &c.Masked, &c.Active, &c.Provider, &c.BaseURL); err != nil {
+		if err = rows.Scan(&c.ID, &c.Name, &c.Masked, &c.Active, &c.Provider, &c.BaseURL, &c.APIFormat); err != nil {
 			return nil, err
 		}
 		items = append(items, c)
@@ -282,7 +282,7 @@ func (s *Store) Credentials(ctx context.Context) ([]Credential, error) {
 func (s *Store) SaveCredential(ctx context.Context, actor, id, name, key string, active bool) (string, error) {
 	return s.SaveProviderCredential(ctx, actor, id, name, key, active, ProviderDeepSeek, "https://api.deepseek.com")
 }
-func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key string, active bool, provider, baseURL string) (string, error) {
+func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key string, active bool, provider, baseURL string, apiFormats ...string) (string, error) {
 	if provider == "" {
 		provider = ProviderDeepSeek
 	}
@@ -293,6 +293,13 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 		return "", problem(400, "invalid_connection", err.Error())
 	}
 	baseURL = normalizeProviderURL(baseURL)
+	apiFormat := ""
+	if len(apiFormats) > 0 {
+		apiFormat = apiFormats[0]
+	}
+	if err := validateAPIFormat(apiFormat); err != nil {
+		return "", problem(400, "invalid_connection", err.Error())
+	}
 
 	if key != "" && (len(key) < 8 || len(key) > 512 || strings.ContainsAny(key, "\r\n\t ")) {
 		return "", problem(400, "invalid_credential", "密钥格式无效")
@@ -306,25 +313,28 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 	}
 	err := s.mutate(ctx, actor, "credential.update", id, func(tx *sql.Tx) error {
 		if !create {
-			var oldProvider string
-			err := tx.QueryRowContext(ctx, "SELECT provider FROM provider_credentials WHERE id=$1 FOR UPDATE", id).Scan(&oldProvider)
+			var oldProvider, oldFormat string
+			err := tx.QueryRowContext(ctx, "SELECT provider,api_format FROM provider_credentials WHERE id=$1 FOR UPDATE", id).Scan(&oldProvider, &oldFormat)
 			if err != nil {
 				return err
+			}
+			if len(apiFormats) == 0 {
+				apiFormat = oldFormat
 			}
 			if oldProvider != provider {
 				return problem(400, "credential_binding_immutable", "修改供应商需创建新凭证")
 			}
 		}
 		if create {
-			_, err := tx.ExecContext(ctx, "INSERT INTO provider_credentials(id,name,masked,encrypted,active,provider,base_url) VALUES($1,$2,$3,$4,$5,$6,$7)", id, name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, provider, baseURL)
+			_, err := tx.ExecContext(ctx, "INSERT INTO provider_credentials(id,name,masked,encrypted,active,provider,base_url,api_format) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", id, name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, provider, baseURL, apiFormat)
 			return err
 		}
 		var result sql.Result
 		var err error
 		if key != "" {
-			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,masked=$2,encrypted=$3,active=$4,base_url=$6 WHERE id=$5", name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, id, baseURL)
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,masked=$2,encrypted=$3,active=$4,base_url=$6,api_format=$7 WHERE id=$5", name, "••••"+key[len(key)-4:], s.Vault.Seal(key, "credential:"+id), active, id, baseURL, apiFormat)
 		} else {
-			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,active=$2,base_url=$4 WHERE id=$3", name, active, id, baseURL)
+			result, err = tx.ExecContext(ctx, "UPDATE provider_credentials SET name=$1,active=$2,base_url=$4,api_format=$5 WHERE id=$3", name, active, id, baseURL, apiFormat)
 		}
 		if err != nil {
 			return err
@@ -618,15 +628,15 @@ func (s *Store) Cleanup(ctx context.Context) error {
 
 func (s *Store) CredentialForConfig(ctx context.Context, cfg PolicyConfig) (string, error) {
 	var raw []byte
-	var provider, baseURL string
-	err := s.DB.QueryRowContext(ctx, "SELECT encrypted,provider,base_url FROM provider_credentials WHERE id=$1 AND active=TRUE", cfg.CredentialID).Scan(&raw, &provider, &baseURL)
+	var provider, baseURL, apiFormat string
+	err := s.DB.QueryRowContext(ctx, "SELECT encrypted,provider,base_url,api_format FROM provider_credentials WHERE id=$1 AND active=TRUE", cfg.CredentialID).Scan(&raw, &provider, &baseURL, &apiFormat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", problem(503, "credential_unavailable", "模型连接密钥尚未配置或已停用")
 	}
 	if err != nil {
 		return "", err
 	}
-	if provider != cfg.ProviderID() || normalizeProviderURL(baseURL) != normalizeProviderURL(cfg.BaseURL) {
+	if apiFormat != cfg.APIFormat || provider != cfg.ProviderID() || normalizeProviderURL(baseURL) != normalizeProviderURL(cfg.BaseURL) {
 		return "", problem(400, "credential_provider_mismatch", "凭证绑定的供应商或服务地址与策略不匹配")
 	}
 	return s.Vault.Open(raw, "credential:"+cfg.CredentialID)

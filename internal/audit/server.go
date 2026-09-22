@@ -491,11 +491,12 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) error {
 }
 func (s *Server) saveCredential(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Provider string `json:"provider"`
-		BaseURL  string `json:"base_url"`
-		Name     string `json:"name"`
-		Key      string `json:"api_key"`
-		Active   bool   `json:"active"`
+		Provider  string  `json:"provider"`
+		BaseURL   string  `json:"base_url"`
+		APIFormat *string `json:"api_format"`
+		Name      string  `json:"name"`
+		Key       string  `json:"api_key"`
+		Active    bool    `json:"active"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -503,7 +504,11 @@ func (s *Server) saveCredential(w http.ResponseWriter, r *http.Request) error {
 	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || in.Key != "" && (len(in.Key) < 8 || len(in.Key) > 512 || strings.ContainsAny(in.Key, "\r\n\t ")) {
 		return problem(400, "invalid_credential", "密钥名称或格式无效")
 	}
-	id, err := s.Store.SaveProviderCredential(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Key, in.Active, in.Provider, in.BaseURL)
+	var formats []string
+	if in.APIFormat != nil {
+		formats = append(formats, *in.APIFormat)
+	}
+	id, err := s.Store.SaveProviderCredential(r.Context(), actor(r), r.PathValue("id"), in.Name, in.Key, in.Active, in.Provider, in.BaseURL, formats...)
 	if err != nil {
 		return err
 	}

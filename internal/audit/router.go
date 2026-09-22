@@ -573,7 +573,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		if !ok {
 			continue
 		}
-		if credential.provider != candidate.cfg.ProviderID() || normalizeProviderURL(credential.baseURL) != normalizeProviderURL(candidate.cfg.BaseURL) {
+		if credential.apiFormat != candidate.cfg.APIFormat || credential.provider != candidate.cfg.ProviderID() || normalizeProviderURL(credential.baseURL) != normalizeProviderURL(candidate.cfg.BaseURL) {
 			return Assessment{}, problem(400, "credential_provider_mismatch", "凭证绑定的供应商或服务地址与策略不匹配")
 		}
 		if budget && (candidate.cfg.ImageCount > 0 || !prices[routePriceKey{canonicalPriceModel(candidate.channel.Model), candidate.channel.CredentialID}]) {

@@ -55,6 +55,7 @@ export interface Policy {
   updated_at: string;
 }
 export interface ModelChannel {
+  api_format?: APIFormat;
   id: string;
   name: string;
   provider: Provider;
@@ -100,7 +101,9 @@ export interface AuditAttempt {
   usage: Usage;
   cost?: CostView;
 }
+export type APIFormat = "" | "responses" | "chat_completions";
 export interface Credential {
+  api_format?: APIFormat;
   provider: Provider;
   base_url: string;
   id: string;

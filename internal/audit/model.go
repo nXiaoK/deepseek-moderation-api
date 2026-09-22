@@ -13,6 +13,7 @@ var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,100}$`)
 var policyAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`)
 
 type PolicyConfig struct {
+	APIFormat          string  `json:"api_format,omitempty"`
 	TextOnly           bool    `json:"text_only,omitempty"`
 	ImageCount         int     `json:"-"`
 	Provider           string  `json:"provider,omitempty"`
@@ -43,6 +44,9 @@ func (c PolicyConfig) Validate() error {
 		return errors.New("模型名称无效")
 	}
 	if err := validateProviderURL(c.ProviderID(), c.BaseURL); err != nil {
+		return err
+	}
+	if err := validateAPIFormat(c.APIFormat); err != nil {
 		return err
 	}
 	if len(c.ConnectionRevision) > 100 {
@@ -171,6 +175,7 @@ func (c PolicySettings) Validate() error {
 }
 
 type ModelChannel struct {
+	APIFormat        string        `json:"api_format"`
 	ID               string        `json:"id"`
 	Name             string        `json:"name"`
 	Provider         string        `json:"provider"`
@@ -191,7 +196,7 @@ type ModelChannel struct {
 }
 
 func (c ModelChannel) Inference(r PolicySettings) PolicyConfig {
-	return PolicyConfig{TextOnly: c.TextOnly, Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
+	return PolicyConfig{APIFormat: c.APIFormat, TextOnly: c.TextOnly, Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
 }
 
 type AuditAttempt struct {
@@ -212,12 +217,13 @@ type AuditAttempt struct {
 	Cost         *CostView `json:"cost,omitempty"`
 }
 type Credential struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"base_url"`
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Masked   string `json:"masked"`
-	Active   bool   `json:"active"`
+	APIFormat string `json:"api_format"`
+	Provider  string `json:"provider"`
+	BaseURL   string `json:"base_url"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Masked    string `json:"masked"`
+	Active    bool   `json:"active"`
 }
 type ClientKey struct {
 	Revision   int64      `json:"revision"`

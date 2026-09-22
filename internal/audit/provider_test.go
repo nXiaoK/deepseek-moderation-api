@@ -277,6 +277,9 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 			t.Fatal("inference must not require an auth or capability endpoint", r.Method, r.URL.Path)
 		}
 		inferenceCalls.Add(1)
+		if wantPath == "/api/v1/chat/completions" {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.2,\"reason\":\"正常\"}"}}]}`))}, nil
+		}
 		raw = []byte(grokSSE(`{"confidence":0.2,"reason":"测试"}`, `{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":8}}`))
 		headers.Set("Content-Type", "text/event-stream")
 
@@ -308,6 +311,18 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if err != nil || res.CacheHit || inferenceCalls.Load() != 2 {
 		t.Fatal("updated endpoint reused cached verdict or failed to route", res, err)
 	}
+	wantPath = "/api/v1/chat/completions"
+	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", true, ProviderGrok, "https://sub2api.test/api/v1", APIFormatChatCompletions); err != nil {
+		t.Fatal(err)
+	}
+	res, err = runTestAudit(t, app, p, key.ID, "production", "hello")
+	if err != nil || res.CacheHit || inferenceCalls.Load() != 3 {
+		t.Fatal("selected API format did not propagate to runtime", res, err)
+	}
+	res, err = runTestAudit(t, app, p, key.ID, "production", "hello")
+	if err != nil || !res.CacheHit || inferenceCalls.Load() != 3 {
+		t.Fatal("new format cache failed", res, err)
+	}
 	if _, err = store.SaveProviderCredential(ctx, "admin", cred, "Grok test", "", false, ProviderGrok, "https://sub2api.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +335,7 @@ func TestGrokPublicationAndRuntimeWithBoundCredential(t *testing.T) {
 	if _, err = store.DB.Exec("INSERT INTO client_budgets(client_id,monthly_limit) VALUES($1,1000000000000)", key.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = runTestAudit(t, app, p, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 2 {
+	if _, err = runTestAudit(t, app, p, key.ID, "production", "new input"); err == nil || inferenceCalls.Load() != 3 {
 		t.Fatal("monetary budget silently bypassed for unpriced Grok")
 	}
 	request := httptest.NewRequest("GET", "/admin/billing/costs", nil)

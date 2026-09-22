@@ -8,7 +8,7 @@ import (
 )
 
 type routeCredential struct {
-	key, provider, baseURL string
+	key, provider, baseURL, apiFormat string
 }
 
 type routePriceKey struct {
@@ -41,14 +41,14 @@ func (s *Store) routeResources(ctx context.Context, channels []ModelChannel, wit
 
 	credentials := make(map[string]routeCredential, len(credentialIDs))
 	if len(credentialIDs) > 0 {
-		rows, err := s.DB.QueryContext(ctx, "SELECT id,encrypted,provider,base_url FROM provider_credentials WHERE active AND id=ANY($1)", pq.Array(credentialIDs))
+		rows, err := s.DB.QueryContext(ctx, "SELECT id,encrypted,provider,base_url,api_format FROM provider_credentials WHERE active AND id=ANY($1)", pq.Array(credentialIDs))
 		if err != nil {
 			return nil, nil, err
 		}
 		for rows.Next() {
-			var id, provider, baseURL string
+			var id, provider, baseURL, apiFormat string
 			var encrypted []byte
-			if err := rows.Scan(&id, &encrypted, &provider, &baseURL); err != nil {
+			if err := rows.Scan(&id, &encrypted, &provider, &baseURL, &apiFormat); err != nil {
 				rows.Close()
 				return nil, nil, err
 			}
@@ -57,7 +57,7 @@ func (s *Store) routeResources(ctx context.Context, channels []ModelChannel, wit
 				rows.Close()
 				return nil, nil, err
 			}
-			credentials[id] = routeCredential{key: key, provider: provider, baseURL: baseURL}
+			credentials[id] = routeCredential{key: key, provider: provider, baseURL: baseURL, apiFormat: apiFormat}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()

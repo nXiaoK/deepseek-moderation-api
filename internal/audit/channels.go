@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_tokens,c.max_concurrency,c.enabled,c.revision,c.cache_epoch,k.provider,k.base_url,k.active,c.text_only,c.rpm`
+const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_tokens,c.max_concurrency,c.enabled,c.revision,c.cache_epoch,k.provider,k.base_url,k.active,c.text_only,c.rpm,k.api_format`
 
 func scanChannel(row scanner) (ModelChannel, error) {
 	var c ModelChannel
-	err := row.Scan(&c.ID, &c.Name, &c.Model, &c.CredentialID, &c.TimeoutMS, &c.MaxTokens, &c.MaxConcurrency, &c.Enabled, &c.Revision, &c.CacheEpoch, &c.Provider, &c.BaseURL, &c.CredentialActive, &c.TextOnly, &c.RPM)
+	err := row.Scan(&c.ID, &c.Name, &c.Model, &c.CredentialID, &c.TimeoutMS, &c.MaxTokens, &c.MaxConcurrency, &c.Enabled, &c.Revision, &c.CacheEpoch, &c.Provider, &c.BaseURL, &c.CredentialActive, &c.TextOnly, &c.RPM, &c.APIFormat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -151,7 +151,7 @@ func (s *Store) SaveChannel(ctx context.Context, actor string, c ModelChannel) (
 		c.ID = randomToken("chan_")
 	}
 	err := s.mutate(ctx, actor, "channel.save", c.ID, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, "SELECT provider,base_url,active FROM provider_credentials WHERE id=$1 FOR SHARE", c.CredentialID).Scan(&c.Provider, &c.BaseURL, &c.CredentialActive)
+		err := tx.QueryRowContext(ctx, "SELECT provider,base_url,active,api_format FROM provider_credentials WHERE id=$1 FOR SHARE", c.CredentialID).Scan(&c.Provider, &c.BaseURL, &c.CredentialActive, &c.APIFormat)
 		if errors.Is(err, sql.ErrNoRows) {
 			return problem(400, "credential_required", "请选择有效的连接密钥")
 		}

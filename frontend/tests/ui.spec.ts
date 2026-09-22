@@ -613,6 +613,67 @@ test("small costs retain decimals and isolated latency samples remain visible", 
     .toBeGreaterThan(15);
 });
 
+test("connection API format can be selected on creation and changed on edit", async ({
+  page,
+}) => {
+  let credential: Record<string, unknown> | undefined;
+  const saves: Record<string, unknown>[] = [];
+  await page.route("**/admin/credentials", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      saves.push(body);
+      credential = { ...body, id: "cline", masked: "••••test" };
+      return route.fulfill({ json: { id: "cline" } });
+    }
+    return route.fulfill({ json: credential ? [credential] : [] });
+  });
+  await page.route("**/admin/credentials/cline", async (route) => {
+    expect(route.request().method()).toBe("PUT");
+    const body = route.request().postDataJSON();
+    saves.push(body);
+    credential = { ...credential, ...body };
+    return route.fulfill({ json: { id: "cline" } });
+  });
+  await page.goto("/");
+  await navigate(page, "连接密钥");
+  const format = page.getByRole("combobox", { name: "API 接口类型" });
+  await expect(format).toHaveValue("chat_completions");
+  await page.locator('input[type="url"]').fill("https://api.cline.bot/api/v1");
+  await page.getByPlaceholder("例如：DeepSeek 主账户").fill("Cline");
+  await page
+    .getByLabel("DeepSeek API Key", { exact: true })
+    .fill("test-api-key");
+  await format.selectOption("responses");
+  await page.getByRole("button", { name: "加密保存" }).click();
+  await expect(page.locator(".credential-row")).toContainText("/responses");
+  expect(saves[0]).toMatchObject({
+    base_url: "https://api.cline.bot/api/v1",
+    api_format: "responses",
+    api_key: "test-api-key",
+  });
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(format).toHaveValue("responses");
+  await format.selectOption("chat_completions");
+  await page.getByRole("button", { name: "加密保存" }).click();
+  await expect(page.locator(".credential-row")).toContainText(
+    "/chat/completions",
+  );
+  expect(saves[1]).toMatchObject({
+    base_url: "https://api.cline.bot/api/v1",
+    api_format: "chat_completions",
+    api_key: "",
+  });
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(format).toHaveValue("chat_completions");
+  await page.getByRole("button", { name: "取消编辑" }).click();
+  await page
+    .getByRole("combobox", { name: "连接类型" })
+    .selectOption("grok_via_sub2api");
+  await expect(format).toHaveValue("responses");
+  await format.selectOption("chat_completions");
+  await expect(format).toHaveValue("chat_completions");
+});
+
 for (const provider of ["deepseek", "grok_via_sub2api"]) {
   test(`connection credential API address can be edited without replacing the key: ${provider}`, async ({
     page,
@@ -636,6 +697,7 @@ for (const provider of ["deepseek", "grok_via_sub2api"]) {
         provider,
         name: credential.name,
         base_url: "https://new.example.com/proxy/v1/responses/",
+        api_format: "",
         api_key: saves === 0 ? "" : "replacement-test-key",
         active: false,
       });
