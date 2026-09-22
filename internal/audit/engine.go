@@ -140,6 +140,20 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	if _, err = dec.Token(); err != io.EOF {
 		return Assessment{}, attempt, "", problem(502, "invalid_model_response", "模型响应包含多余内容")
 	}
+	// Some gateways (including Cline) wrap a Chat Completions response in
+	// {"success":true,"data":{...}}. Keep native choices authoritative and
+	// unwrap only an explicitly successful envelope, after validating all JSON.
+	var envelope struct {
+		Choices json.RawMessage `json:"choices"`
+		Success json.RawMessage `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && len(envelope.Choices) == 0 {
+		var success bool
+		if json.Unmarshal(envelope.Success, &success) == nil && success && len(envelope.Data) > 0 {
+			body = envelope.Data
+		}
+	}
 	decodeErr := json.Unmarshal(body, &out)
 	usage := Usage{Attempted: true}
 	_ = json.Unmarshal(out.Usage, &usage)

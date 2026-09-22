@@ -122,6 +122,9 @@ func TestChannelDiagnosticReportsActualFailureAndRecovery(t *testing.T) {
 	status, body = 200, `{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.1,\"reason\":\"正常\"}"}}]}`
 	before := calls
 	for i := 0; i < 2; i++ {
+		if i == 1 {
+			body = `{"success":true,"data":` + body + `}`
+		}
 		result = call(true, true, c.Revision, 200)
 		if !result.OK || result.HTTPStatus != 200 || result.Assessment == nil || result.Assessment.Confidence != .1 {
 			t.Fatal("recovery failed", result)

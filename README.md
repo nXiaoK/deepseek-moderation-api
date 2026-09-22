@@ -253,6 +253,8 @@ go test ./internal/audit -run TestBackupRestoreRoundTrip -count=1
 
 已有连接默认“保持原调用方式”，保留之前的完整接口地址和供应商默认请求格式。编辑时可切换到任一接口类型，并将地址改为基础地址；API Key 留空保留原密钥。切换接口类型会更新关联通道版本并使旧缓存失效。
 
+Chat Completions 同时支持标准的顶层 `choices` 和 Cline 的 `{"success":true,"data":{"choices":[...]}}` 响应包装；后者从 `data` 中读取审核结果、模型名、请求 ID 和 Token 用量，审核 JSON 与完成状态仍按相同规则校验。
+
 Grok/sub2api 的 `AUDIT_SUB2API_ORIGINS` 仍填写源地址（协议、域名和端口，不含路径）。选定接口类型后的可选模型列表探测请求基础地址下的 `/models`，例如 `/api/v1/models`；旧连接保持同一源地址的 `/v1/models`。不提供该接口的网关可手动填写模型后试跑。
 
 Responses 通道在顶层 `instructions` 中保留策略提示词，并在 `input` 中单独添加 developer 消息，要求输出包含 `confidence` 和 `reason` 的 JSON 对象。这样兼容只检查输入消息中是否包含 `json` 的第三方网关；待审文本和图片仍放在独立的 user 消息中。更新后如通道仍显示配置异常，点击“清缓存 / 重试连接”后再试跑。
