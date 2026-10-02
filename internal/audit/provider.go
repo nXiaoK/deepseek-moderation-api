@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -133,6 +134,14 @@ const grokOutputLimit = 65536
 // from both the administrator's policy and the untrusted material being audited.
 const auditJSONOutputInstruction = `Return only a JSON object with exactly two fields: "confidence" (a number from 0 to 1) and "reason" (a string of at most 80 Unicode characters). Apply the configured audit policy. Do not include Markdown or any additional fields.`
 
+func (c PolicyConfig) outputInstruction() string {
+	return strings.Replace(auditJSONOutputInstruction, "80 Unicode characters", fmt.Sprintf("%d Unicode characters", c.reasonMaxChars()), 1)
+}
+
+func (c PolicyConfig) chatPrompt() string {
+	return c.Prompt + "\n\n" + c.outputInstruction()
+}
+
 type grokResponse struct {
 	ID         string          `json:"id"`
 	Model      string          `json:"model"`
@@ -173,7 +182,7 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 		userContent = content
 	}
 	payload["input"] = []map[string]any{
-		{"role": "developer", "content": auditJSONOutputInstruction},
+		{"role": "developer", "content": cfg.outputInstruction()},
 		{"role": "user", "content": userContent},
 	}
 	raw, err := json.Marshal(payload)
@@ -215,10 +224,11 @@ func (e *Engine) assessGrok(ctx context.Context, cfg PolicyConfig, key, input st
 	if env.Status != "completed" || len(env.Error) > 0 && string(env.Error) != "null" {
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
-	assessment, err := ParseAssessment([]byte(content))
+	assessment, err := parseAssessment([]byte(content), cfg.reasonMaxChars())
 	if err != nil {
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", err.Error())
 	}
+	assessment.Reason = redactReasonWithLimit(assessment.Reason, cfg.reasonMaxChars())
 	return assessment, usage, content, nil
 }
 

@@ -21,7 +21,7 @@ func moderationResult(p Policy, assessment Assessment) Result {
 			PolicyVersion: int(p.Revision),
 			Confidence:    assessment.Confidence,
 			Threshold:     p.Config.Threshold,
-			Reason:        redactReason(assessment.Reason),
+			Reason:        redactReasonWithLimit(assessment.Reason, ReasonLimitCeiling),
 		},
 	}
 }

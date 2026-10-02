@@ -73,7 +73,7 @@ func (s *Store) cachedAssessments(ctx context.Context, keys []string) (map[strin
 		if err := rows.Scan(&key, &raw, &model); err != nil {
 			return nil, err
 		}
-		value, err := ParseAssessment(raw)
+		value, err := parseAssessment(raw, ReasonLimitCeiling)
 		if err != nil {
 			return nil, err
 		}
@@ -97,14 +97,14 @@ func (s *Store) CachedAssessment(ctx context.Context, key string) (*CachedResult
 	if err != nil {
 		return nil, err
 	}
-	value, err := ParseAssessment(raw)
+	value, err := parseAssessment(raw, ReasonLimitCeiling)
 	if err != nil {
 		return nil, err
 	}
 	return &CachedResult{value, actualModel}, nil
 }
 func (s *Store) CacheAssessment(ctx context.Context, key string, value Assessment, ttl int, actualModel string) error {
-	value.Reason = redactReason(value.Reason)
+	value.Reason = redactReasonWithLimit(value.Reason, ReasonLimitCeiling)
 	raw, _ := json.Marshal(value)
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO assessment_cache(cache_key,assessment,expires_at,actual_model) VALUES($1,$2,$3,$4) ON CONFLICT(cache_key) DO UPDATE SET assessment=$2,expires_at=$3,actual_model=$4`, key, string(raw), time.Now().Add(time.Duration(ttl)*time.Second), actualModel)
 	return err

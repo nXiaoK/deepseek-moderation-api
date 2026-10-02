@@ -151,10 +151,14 @@ func uniqueValue(d *json.Decoder, depth int) error {
 	return err
 }
 
-// MaxReasonRunes bounds model explanations in audit metadata and stored logs.
+// MaxReasonRunes is the default explanation limit for existing installations.
 const MaxReasonRunes = 80
 
 func ParseAssessment(raw []byte) (Assessment, error) {
+	return parseAssessment(raw, MaxReasonRunes)
+}
+
+func parseAssessment(raw []byte, limit int) (Assessment, error) {
 	var data struct {
 		Confidence *float64 `json:"confidence"`
 		Reason     *string  `json:"reason"`
@@ -163,13 +167,13 @@ func ParseAssessment(raw []byte) (Assessment, error) {
 		return Assessment{}, fmt.Errorf("审核结果不是符合协议的 JSON: %w", err)
 	}
 	if data.Confidence == nil || data.Reason == nil {
-		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", MaxReasonRunes)
+		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", limit)
 	}
 	if *data.Confidence < 0 || *data.Confidence > 1 {
-		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", MaxReasonRunes)
+		return Assessment{}, fmt.Errorf("审核结果需包含 0～1 的 confidence 与最多 %d 字的 reason", limit)
 	}
-	if n := utf8.RuneCountInString(*data.Reason); n > MaxReasonRunes {
-		return Assessment{}, fmt.Errorf("reason 为 %d 字，超过 %d 字上限", n, MaxReasonRunes)
+	if n := utf8.RuneCountInString(*data.Reason); n > limit {
+		return Assessment{}, fmt.Errorf("reason 为 %d 字，超过 %d 字上限", n, limit)
 	}
 	return Assessment{*data.Confidence, *data.Reason}, nil
 }

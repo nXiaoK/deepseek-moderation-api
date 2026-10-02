@@ -116,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	admin("POST /admin/auth/logout", s.logout)
 	admin("PUT /admin/auth/password", s.changePassword)
+	admin("GET /admin/settings/audit", s.getAuditSettings)
+	admin("PUT /admin/settings/audit", s.saveAuditSettings)
 	admin("GET /admin/settings/email", s.getEmailSettings)
 	admin("PUT /admin/settings/email", s.saveEmailSettings)
 	admin("POST /admin/settings/email/test", s.testEmailSettings)
@@ -716,9 +718,13 @@ func redact(s string) string { return secretPattern.ReplaceAllString(s, "[隐去
 // Redaction can lengthen a short secret; keep the outgoing reason within the
 // client contract even after replacing secrets. Raw model output is separate.
 func redactReason(s string) string {
+	return redactReasonWithLimit(s, MaxReasonRunes)
+}
+
+func redactReasonWithLimit(s string, limit int) string {
 	s = redact(s)
-	if utf8.RuneCountInString(s) > MaxReasonRunes {
-		return string([]rune(s)[:MaxReasonRunes-1]) + "…"
+	if utf8.RuneCountInString(s) > limit {
+		return string([]rune(s)[:limit-1]) + "…"
 	}
 	return s
 }

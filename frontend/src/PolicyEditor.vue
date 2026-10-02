@@ -234,7 +234,7 @@ async function test() {
     <div class="contract">
       <code>{"confidence": 0.00, "reason": "..."}</code
       ><span class="muted small"
-        >评分 0～1，原因最多 80 字；有效结果直接返回。</span
+        >评分 0～1，原因字数上限在系统设置中配置；有效结果直接返回。</span
       >
     </div>
     <div class="form-grid">

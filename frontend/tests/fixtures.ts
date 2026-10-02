@@ -309,6 +309,7 @@ export async function mockAPI(page: Page) {
       },
       "/admin/audit-logs": { items: [log], total: 1 },
       "/admin/audit-logs/audit-1": log,
+      "/admin/settings/audit": { reason_max_chars: 80, revision: 1 },
       "/admin/settings/email": {
         enabled: false,
         host: "",

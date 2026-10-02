@@ -544,6 +544,10 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			return Assessment{}, err
 		}
 	}
+	settings, err := s.Store.auditSettings(ctx)
+	if err != nil {
+		return Assessment{}, err
+	}
 	bindings := map[string]ChannelBinding{}
 	for _, b := range p.Config.Channels {
 		bindings[b.ChannelID] = b
@@ -558,6 +562,7 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			continue
 		}
 		cfg := c.Inference(p.Config)
+		cfg.ReasonMaxChars = settings.ReasonMaxChars
 		if c.TextOnly && len(images) > 0 && strings.TrimSpace(input) == "" {
 			excludedEmpty = true
 			continue

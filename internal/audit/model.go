@@ -13,6 +13,7 @@ var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/~-]{1,100}$`)
 var policyAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$`)
 
 type PolicyConfig struct {
+	ReasonMaxChars     int     `json:"reason_max_chars,omitempty"`
 	APIFormat          string  `json:"api_format,omitempty"`
 	TextOnly           bool    `json:"text_only,omitempty"`
 	ImageCount         int     `json:"-"`
@@ -31,6 +32,9 @@ type PolicyConfig struct {
 }
 
 func (c PolicyConfig) Validate() error {
+	if c.reasonMaxChars() < 1 || c.reasonMaxChars() > ReasonLimitCeiling {
+		return errors.New("reason 字数上限必须为 1～4096 的整数")
+	}
 	if c.ResultCacheTTL < 0 || c.ResultCacheTTL > 3600 {
 		return errors.New("结果缓存时间必须为 0～3600 秒；0 表示关闭")
 	}

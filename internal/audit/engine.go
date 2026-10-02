@@ -75,7 +75,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	if cfg.apiFormat() == APIFormatResponses {
 		return e.assessGrok(ctx, cfg, key, input, images...)
 	}
-	payload := map[string]any{"model": cfg.Model, "stream": false, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
+	payload := map[string]any{"model": cfg.Model, "stream": false, "max_tokens": cfg.MaxTokens, "response_format": map[string]string{"type": "json_object"}, "messages": []map[string]string{{"role": "system", "content": cfg.chatPrompt()}, {"role": "user", "content": "<user_input>" + input + "</user_input>"}}}
 	if cfg.APIFormat == "" || cfg.officialPricing() {
 		payload["thinking"] = map[string]string{"type": "disabled"}
 	}
@@ -89,7 +89,7 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		for _, image := range images {
 			content = append(content, map[string]any{"type": "image_url", "image_url": image})
 		}
-		payload["messages"] = []map[string]any{{"role": "system", "content": cfg.Prompt}, {"role": "user", "content": content}}
+		payload["messages"] = []map[string]any{{"role": "system", "content": cfg.chatPrompt()}, {"role": "user", "content": content}}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -174,9 +174,10 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 		}
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", "模型未完整返回审核结果")
 	}
-	assessment, err := ParseAssessment([]byte(content))
+	assessment, err := parseAssessment([]byte(content), cfg.reasonMaxChars())
 	if err != nil {
 		return Assessment{}, usage, content, problem(502, "invalid_model_response", err.Error())
 	}
+	assessment.Reason = redactReasonWithLimit(assessment.Reason, cfg.reasonMaxChars())
 	return assessment, usage, content, nil
 }

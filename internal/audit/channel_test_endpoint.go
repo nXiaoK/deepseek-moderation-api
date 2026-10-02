@@ -10,7 +10,7 @@ import (
 )
 
 const channelTestInput = "你好，这是一条模型连接测试消息。"
-const channelTestPrompt = `判断用户输入是否包含违法或滥用内容。仅返回 JSON 对象，包含 confidence（0 到 1，表示违规置信度）和 reason（不超过 80 个字符的简短原因），不要返回其他字段或 Markdown。`
+const channelTestPrompt = `判断用户输入是否包含违法或滥用内容。仅返回 JSON 对象，包含 confidence（0 到 1，表示违规置信度）和 reason（简短原因，字数遵守系统输出限制），不要返回其他字段或 Markdown。`
 
 type upstreamStatusKey struct{}
 
@@ -56,7 +56,12 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) error {
 	if in.Revision != c.Revision {
 		return ErrConflict
 	}
+	settings, err := s.Store.auditSettings(r.Context())
+	if err != nil {
+		return err
+	}
 	cfg := c.Inference(DefaultSettings())
+	cfg.ReasonMaxChars = settings.ReasonMaxChars
 	cfg.Prompt, cfg.ResultCacheTTL = channelTestPrompt, 0
 	started := time.Now()
 	result := ChannelTestResult{ChannelID: c.ID, ChannelName: c.Name, Model: c.Model, APIFormat: cfg.apiFormat(), Endpoint: cfg.inferenceURL(), TimeoutMS: cfg.TimeoutMS, MaxTokens: cfg.MaxTokens}

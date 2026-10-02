@@ -15,6 +15,7 @@ import PolicyEditor from "./PolicyEditor.vue";
 import PolicyTools from "./PolicyTools.vue";
 import OperationsPanel from "./OperationsPanel.vue";
 import EmailSettingsPanel from "./EmailSettingsPanel.vue";
+import AuditSettingsPanel from "./AuditSettingsPanel.vue";
 import ChannelPanel from "./ChannelPanel.vue";
 import AttemptList from "./AttemptList.vue";
 import {
@@ -128,6 +129,7 @@ const actionFilter = ref(""),
   actionResource = ref("");
 const actionLabels: Record<string, string> = {
   "settings.email": "修改邮件提醒设置",
+  "settings.audit": "修改审核输出设置",
   "policy.save": "保存策略",
   "policy.create": "创建策略",
   "policy.state": "启停策略",
@@ -232,7 +234,7 @@ const pageMeta: Record<string, [string, string]> = {
   credentials: ["CONNECTIONS", "上游模型访问凭证"],
   keys: ["ACCESS KEYS", "调用方访问权限"],
   billing: ["BILLING", "费用明细与预算"],
-  settings: ["SETTINGS", "邮件提醒、账户安全与管理记录"],
+  settings: ["SETTINGS", "审核输出、邮件提醒、账户安全与管理记录"],
 };
 const title = computed(
   () => nav.find((n) => n[0] === page.value)?.[1] || "审核策略",
@@ -1600,6 +1602,7 @@ window.addEventListener("beforeunload", (e) => {
 
         <template v-if="page === 'settings'"
           ><OperationsPanel @navigate="navigate" />
+          <AuditSettingsPanel @saved="run(loadActions)" />
           <EmailSettingsPanel @saved="run(loadActions)" />
           <section class="panel settings-panel">
             <div class="panel-heading"><h2>管理员账户</h2></div>
