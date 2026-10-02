@@ -9,3 +9,5 @@ bin/
 backups/
 frontend/test-results/
 frontend/playwright-report/
+.deploy.lock/
+.env.tmp.*

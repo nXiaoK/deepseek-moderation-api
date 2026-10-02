@@ -6,11 +6,29 @@
 
 兼容原版 sub2api 的 OpenAI Moderations 接口，无需修改 sub2api 代码或添加审核服务类型。不提供旧开发数据库迁移；请配置新的空数据库，原数据库不会被程序自动清空。已有本项目当前表结构的实例升级本次协议适配时可沿用数据库，无需重新初始化。
 
+**快捷安装与更新（标准 Docker Compose）：** 首次运行 `./install.sh`，后续在原部署目录运行 `./update.sh`。自动保留凭据和数据库卷，更新前备份并检查健康状态，详见[脚本使用说明](UPDATING.md)。已有 1Panel / 原生 systemd 部署仍使用原部署方式。
+
 **部署文档：** [Docker Compose 与手动部署指南](DEPLOY.zh.md)。手动部署也可以只将 PostgreSQL 放在 Docker 中；需要原生 systemd 部署时，另见[本地打包并上传 Linux 服务器的教程](DEPLOY_NATIVE.zh.md)。
 
 **已有生产实例：** 按[更新指南](UPGRADE.zh.md)更新；涵盖 1Panel 镜像导入、Docker Compose 源码构建和 systemd，沿用原数据库及主密钥。
 
 ## 启动
+
+### 推荐：脚本安装（Docker Compose）
+
+服务器先安装 Git、Docker、Docker Compose v2、Python 3 和 OpenSSL，无需在宿主机安装 Go/Node/pnpm：
+
+```sh
+git clone https://github.com/nXiaoK/deepseek-moderation-api.git
+cd deepseek-moderation-api
+./install.sh
+# 后续更新：在同一个部署目录执行
+./update.sh
+```
+
+安装脚本生成随机凭据，初始管理员密码从 `.env` 的 `ADMIN_PASSWORD` 读取，不会输出到日志。已有 `.env` 不会被覆盖；首次安装失败可用 `./install.sh --resume` 重试。远程访问请参考[脚本说明](UPDATING.md)的 SSH 隧道 / HTTPS 配置。
+
+### 手动启动 / 开发
 
 需要 Go 1.26+、Node 20.19+、pnpm 10，以及 PostgreSQL 17 或 Docker。
 

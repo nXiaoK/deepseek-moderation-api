@@ -9,6 +9,14 @@ concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  deployment-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n install.sh update.sh deploy/scripts-common.sh
+      - name: Deployment safety and lifecycle tests (offline)
+        run: python3 -B -m unittest discover -s tests -p 'test_deploy_scripts.py' -v
   backend:
     runs-on: ubuntu-latest
     services:

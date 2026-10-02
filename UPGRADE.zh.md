@@ -56,6 +56,18 @@ docker compose --env-file .env -p deepseek-audit -f compose.yaml up -d --no-deps
 
 ## B. Docker Compose 从源码构建
 
+标准仓库 `compose.yaml`、本地 `.env`、单个 PostgreSQL 命名卷的部署可以直接在**原目录**执行：
+
+```bash
+./update.sh
+# 如果已经自行拉取源码，或者需要构建当前检出的版本：
+./update.sh --no-pull
+```
+
+脚本识别原 Compose 项目名，不要求旧实例改成 `deepseek-audit`。先检查凭据和数据卷，保存旧镜像及配置，快进源码并完成构建，再短暂停止应用、备份数据库并重建应用。数据库容器不会重建。健康检查失败时尝试切回旧镜像，但**不自动逆转数据库迁移**；具体支持范围、恢复方法和限制见 [UPDATING.md](UPDATING.md)。外部数据库、自定义挂载、额外 Compose 覆盖文件、1Panel 和 systemd 请继续按本页手动操作。
+
+### 手动操作
+
 在原有源码和 Compose 目录操作，保留原 `.env`、Compose 项目名和数据库卷。先记录原镜像 ID，并给它添加一个未使用的备份标签：
 
 ```bash
