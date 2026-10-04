@@ -498,41 +498,85 @@ test("model channel test shows endpoint, detailed failures, recovery and request
   expect(calls).toBe(3);
 });
 
-test("policy cooldown settings show legacy defaults and persist edits", async ({
-  page,
-}) => {
-  let saved: Record<string, unknown> | undefined;
-  await page.route("**/admin/policies/policy-1/config", async (route) => {
-    saved = route.request().postDataJSON().config;
-    await route.fulfill({
-      json: {
-        id: "policy-1",
-        name: "默认内容审核",
-        alias: "abuse-audit-v1",
-        enabled: true,
-        revision: 2,
-        config: saved,
+for (const legacyValues of ["missing", "zero"] as const) {
+  test(`policy routing settings default ${legacyValues} values and persist edits`, async ({
+    page,
+  }) => {
+    let saved: Record<string, unknown> | undefined;
+    const policy = {
+      id: "policy-1",
+      name: "默认内容审核",
+      alias: "abuse-audit-v1",
+      enabled: true,
+      revision: 1,
+      config: {
+        ...config,
+        ...(legacyValues === "zero"
+          ? {
+              max_attempts_per_priority: 0,
+              priority_timeout_ms: 0,
+              failure_threshold: 0,
+              failure_cooldown_minutes: 0,
+            }
+          : {}),
       },
+    };
+    await page.route("**/admin/policies/policy-1", (route) =>
+      route.fulfill({ json: policy }),
+    );
+    await page.route("**/admin/policies/policy-1/config", async (route) => {
+      saved = route.request().postDataJSON().config;
+      await route.fulfill({
+        json: { ...policy, revision: 2, config: saved },
+      });
     });
+    await page.goto("/");
+    await page.getByRole("tab", { name: "模型调度" }).click();
+    const attempts = page.getByRole("spinbutton", { name: "同级最多调用次数" });
+    const timeout = page.getByRole("spinbutton", {
+      name: "同级累计时限（毫秒）",
+    });
+    const threshold = page.getByRole("spinbutton", { name: "连续失败次数" });
+    const cooldown = page.getByRole("spinbutton", {
+      name: "失败冷却时间（分钟）",
+    });
+    await expect(attempts).toHaveValue("2");
+    await expect(attempts).toHaveAttribute("min", "1");
+    await expect(attempts).toHaveAttribute("max", "5");
+    await expect(timeout).toHaveValue("4000");
+    await expect(timeout).toHaveAttribute("min", "100");
+    await expect(timeout).toHaveAttribute("max", "25000");
+    await expect(threshold).toHaveValue("3");
+    await expect(cooldown).toHaveValue("30");
+    await expect(
+      page.getByText(/存在可调度的较低优先级备用通道时/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/单通道或试跑指定通道沿用通道超时/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeDisabled();
+    await attempts.fill("1");
+    await timeout.fill("1700");
+    await threshold.fill("5");
+    await cooldown.fill("45");
+    await page.getByRole("button", { name: "保存并生效" }).click();
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeDisabled();
+    expect(saved?.max_attempts_per_priority).toBe(1);
+    expect(saved?.priority_timeout_ms).toBe(1700);
+    expect(saved?.max_attempts).toBe(3);
+    expect(saved?.total_timeout_ms).toBe(9000);
+    expect(saved?.failure_threshold).toBe(5);
+    expect(saved?.failure_cooldown_minutes).toBe(45);
+    await expect(attempts).toHaveValue("1");
+    await expect(timeout).toHaveValue("1700");
+    await expect(threshold).toHaveValue("5");
+    await expect(cooldown).toHaveValue("45");
   });
-  await page.goto("/");
-  await page.getByRole("tab", { name: "模型调度" }).click();
-  const threshold = page.getByRole("spinbutton", { name: "连续失败次数" });
-  const cooldown = page.getByRole("spinbutton", {
-    name: "失败冷却时间（分钟）",
-  });
-  await expect(threshold).toHaveValue("3");
-  await expect(cooldown).toHaveValue("30");
-  await expect(page.getByRole("button", { name: "保存并生效" })).toBeDisabled();
-  await threshold.fill("5");
-  await cooldown.fill("45");
-  await page.getByRole("button", { name: "保存并生效" }).click();
-  await expect(page.getByRole("button", { name: "保存并生效" })).toBeDisabled();
-  expect(saved?.failure_threshold).toBe(5);
-  expect(saved?.failure_cooldown_minutes).toBe(45);
-  await expect(threshold).toHaveValue("5");
-  await expect(cooldown).toHaveValue("45");
-});
+}
 
 test("policy edits and billing forms preserve actions", async ({
   page,

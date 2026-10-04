@@ -213,14 +213,15 @@ func TestRouteDeadlineAndAttemptLimit(t *testing.T) {
 	if err == nil || calls != 2 || res.AttemptCount != 2 {
 		t.Fatal("attempt limit ignored", calls, err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	app.Engine.Client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
+		cancel()
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})}
 	_, chs, _ := store.RouteSnapshot(context.Background(), p.ID, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 	before := calls
 	_, err = app.runAudit(ctx, p, chs, key.ID, "production", "timeout", "")
 	if err == nil || calls != before+1 {

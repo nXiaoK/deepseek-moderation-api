@@ -99,6 +99,8 @@ type PolicySettings struct {
 	RetentionDays            int              `json:"retention_days"`
 	TotalTimeoutMS           int              `json:"total_timeout_ms"`
 	MaxAttempts              int              `json:"max_attempts"`
+	MaxAttemptsPerPriority   int              `json:"max_attempts_per_priority"`
+	PriorityTimeoutMS        int              `json:"priority_timeout_ms"`
 	FailureThreshold         int              `json:"failure_threshold"`
 	FailureCooldownMinutes   int              `json:"failure_cooldown_minutes"`
 	Channels                 []ChannelBinding `json:"channels"`
@@ -106,10 +108,23 @@ type PolicySettings struct {
 
 func DefaultSettings() PolicySettings {
 	storeOutput := false
-	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, FailureThreshold: 3, FailureCooldownMinutes: 30, Channels: []ChannelBinding{}}
+	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, MaxAttemptsPerPriority: 2, PriorityTimeoutMS: 4000, FailureThreshold: 3, FailureCooldownMinutes: 30, Channels: []ChannelBinding{}}
 }
 
 // Zero preserves compatibility with policy JSON saved before these settings existed.
+func (c PolicySettings) maxAttemptsPerPriority() int {
+	if c.MaxAttemptsPerPriority == 0 {
+		return 2
+	}
+	return c.MaxAttemptsPerPriority
+}
+func (c PolicySettings) priorityTimeout() time.Duration {
+	ms := c.PriorityTimeoutMS
+	if ms == 0 {
+		ms = 4000
+	}
+	return time.Duration(ms) * time.Millisecond
+}
 func (c PolicySettings) failureThreshold() int {
 	if c.FailureThreshold == 0 {
 		return 3
@@ -158,6 +173,12 @@ func (c PolicySettings) Validate() error {
 	}
 	if c.MaxAttempts < 1 || c.MaxAttempts > 5 {
 		return errors.New("最多调用次数必须为 1～5 次，包含首次调用")
+	}
+	if c.MaxAttemptsPerPriority < 0 || c.MaxAttemptsPerPriority > 5 {
+		return errors.New("每优先级最多调用次数必须为 1～5 次（0 使用默认 2 次）")
+	}
+	if c.PriorityTimeoutMS != 0 && (c.PriorityTimeoutMS < 100 || c.PriorityTimeoutMS > 25000) {
+		return errors.New("每优先级时间预算必须为 100～25000 ms（0 使用默认 4000 ms）")
 	}
 	if c.FailureThreshold < 0 || c.FailureThreshold > 100 {
 		return errors.New("连续失败次数必须为 1～100 次（0 使用默认 3 次）")

@@ -416,6 +416,40 @@ async function test() {
     </div>
     <div class="form-grid">
       <label>
+        同级最多调用次数
+        <input
+          v-model.number="config.max_attempts_per_priority"
+          type="number"
+          min="1"
+          max="5"
+          aria-label="同级最多调用次数"
+          :disabled="busy"
+        />
+        <small>默认 2 次；有较低优先级备用时生效。</small>
+      </label>
+      <label>
+        同级累计时限（毫秒）
+        <input
+          v-model.number="config.priority_timeout_ms"
+          type="number"
+          min="100"
+          max="25000"
+          step="100"
+          aria-label="同级累计时限（毫秒）"
+          :disabled="busy"
+        />
+        <small>默认 4000 毫秒；同级调用共享这段时间。</small>
+      </label>
+    </div>
+    <p class="hint">
+      存在可调度的较低优先级备用通道时，同级达到调用次数或累计时限便切换到下一级；总调用次数仅剩一次且本级已调用过时，将最后一次留给备用。
+      还有下一次调用机会及其他可调度通道时，为下一通道预留总剩余时限的一半，慢调用会提前超时。预留按请求实际剩余时限计算，请求取消仍立即停止。
+    </p>
+    <p class="hint">
+      每个通道每请求最多调用一次，单通道或试跑指定通道沿用通道超时。所有尝试仍受总调用次数和总时限限制，已发送调用均按实际用量计费，超时费用可能需要核对。
+    </p>
+    <div class="form-grid">
+      <label>
         连续失败次数
         <input
           v-model.number="config.failure_threshold"

@@ -296,6 +296,8 @@ async function run(fn: () => Promise<void>) {
 function usePolicy(p: Policy) {
   selected.value = p;
   config.value = structuredClone(p.config);
+  config.value.max_attempts_per_priority ||= 2;
+  config.value.priority_timeout_ms ||= 4000;
   config.value.failure_threshold ||= 3;
   config.value.failure_cooldown_minutes ||= 30;
   policyName.value = p.name;

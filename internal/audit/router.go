@@ -45,12 +45,13 @@ type channelState struct {
 	rpmCalls                 []time.Time
 }
 type routeCandidate struct {
-	channel        ModelChannel
-	binding        ChannelBinding
-	cfg            PolicyConfig
-	key, signature string
-	cacheKey       string
-	attemptAt      time.Time // Set by the request owner immediately before inference.
+	channel          ModelChannel
+	binding          ChannelBinding
+	cfg              PolicyConfig
+	key, signature   string
+	cacheKey         string
+	attemptAt        time.Time // Set by the request owner immediately before inference.
+	failoverDeadline time.Time
 }
 type upstreamFailure struct {
 	*APIError
@@ -178,13 +179,16 @@ func (e *Engine) channelHealth(id string) ChannelHealth {
 // Selection and capacity reservation are atomic. RNG injection makes boundary
 // tests deterministic without probabilistic/flaky distribution assertions.
 func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, used map[string]bool, now time.Time, draw func(int) int) (*routeCandidate, func(error, bool), error) {
+	return e.acquireRoute(candidates, settings, used, now, draw, nil)
+}
+
+func (e *Engine) acquireRoute(candidates []routeCandidate, settings PolicySettings, used map[string]bool, now time.Time, draw func(int) int, progress *routeProgress) (*routeCandidate, func(error, bool), error) {
 	e.routeMu.Lock()
 	defer e.routeMu.Unlock()
 	if len(e.slots) >= cap(e.slots) {
 		return nil, nil, problem(503, "capacity_exceeded", "审核并发已满，请稍后重试")
 	}
 	singleChannel := len(candidates) == 1
-	priority := 101
 	weight := 0
 	rpmBlocked := false
 	remaining := make([]int, len(candidates))
@@ -221,13 +225,17 @@ func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, u
 				continue
 			}
 		}
-		if c.binding.Priority < priority {
-			priority = c.binding.Priority
-			eligible = nil
+		eligible = append(eligible, i)
+	}
+	failoverDeadline := time.Time{}
+	if progress != nil {
+		eligible, failoverDeadline = progress.selectTier(candidates, eligible, settings, now)
+	} else {
+		priority := 101
+		for _, i := range eligible {
+			priority = min(priority, candidates[i].binding.Priority)
 		}
-		if c.binding.Priority == priority {
-			eligible = append(eligible, i)
-		}
+		eligible = slices.DeleteFunc(eligible, func(i int) bool { return candidates[i].binding.Priority != priority })
 	}
 	if len(eligible) == 0 {
 		if rpmBlocked {
@@ -258,6 +266,7 @@ func (e *Engine) acquire(candidates []routeCandidate, settings PolicySettings, u
 	}
 	c := candidates[chosen]
 	c.attemptAt = now
+	c.failoverDeadline = failoverDeadline
 	st := e.routes[c.channel.ID]
 	st.inFlight++
 	st.rpmPending++
@@ -625,11 +634,12 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 	if onlyChannel != "" {
 		limit = 1
 	}
+	progress := newRouteProgress(ctx, limit)
 	for log.AttemptCount < limit {
 		if ctx.Err() != nil {
 			return Assessment{}, problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")
 		}
-		c, release, e := s.Engine.acquire(candidates, p.Config, used, time.Now(), rand.IntN)
+		c, release, e := s.Engine.acquireRoute(candidates, p.Config, used, time.Now(), rand.IntN, progress)
 		if e != nil {
 			return Assessment{}, e
 		}
@@ -637,20 +647,41 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			break
 		}
 		used[c.channel.ID] = true
+		attemptCtx := ctx
+		attemptCancel := func() {}
+		if !c.failoverDeadline.IsZero() {
+			attemptCtx, attemptCancel = context.WithDeadline(ctx, c.failoverDeadline)
+		}
+		preparationExpired := func() bool {
+			return !c.failoverDeadline.IsZero() && ctx.Err() == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+		}
 		// Recheck administrative stops before every attempt, including a fallback.
 		var active bool
-		e = s.Store.DB.QueryRowContext(ctx, `SELECT c.enabled AND k.active AND NOT p.archived AND ($3 OR p.enabled) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$4`, c.channel.ID, p.ID, kind == "test", c.channel.Revision).Scan(&active)
+		e = s.Store.DB.QueryRowContext(attemptCtx, `SELECT c.enabled AND k.active AND NOT p.archived AND ($3 OR p.enabled) FROM audit_model_channels c JOIN provider_credentials k ON k.id=c.credential_id JOIN audit_policies p ON p.id=$2 WHERE c.id=$1 AND c.revision=$4`, c.channel.ID, p.ID, kind == "test", c.channel.Revision).Scan(&active)
 		if errors.Is(e, sql.ErrNoRows) || e == nil && !active {
 			release(nil, false)
+			attemptCancel()
 			continue
 		}
 		if e != nil {
 			release(e, false)
+			if preparationExpired() {
+				attemptCancel()
+				lastErr = problem(503, "route_preparation_timeout", "通道调用前校验达到调度时间预算")
+				continue
+			}
+			attemptCancel()
 			return Assessment{}, e
 		}
-		key, e := s.Store.CredentialForConfig(ctx, c.cfg)
+		key, e := s.Store.CredentialForConfig(attemptCtx, c.cfg)
 		if e != nil || key != c.key {
 			release(e, false)
+			if preparationExpired() {
+				attemptCancel()
+				lastErr = problem(503, "route_preparation_timeout", "通道调用前校验达到调度时间预算")
+				continue
+			}
+			attemptCancel()
 			if e != nil && errorCode(e) != "credential_unavailable" {
 				return Assessment{}, e
 			}
@@ -663,13 +694,20 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		scope := auditInputScope(c.channel.TextOnly, images)
 		attempt := AuditAttempt{InputScope: scope, ImageCount: len(attemptImages), ID: randomToken("cost_"), ChannelID: c.channel.ID, ChannelName: c.channel.Name, Provider: c.channel.Provider, Model: c.channel.Model}
 		at := time.Now()
-		entry, e := s.Store.ReserveCost(ctx, attempt.ID, client, kind, p, c.cfg, input, false, at, response.ID, c.channel.ID)
+		entry, e := s.Store.ReserveCost(attemptCtx, attempt.ID, client, kind, p, c.cfg, input, false, at, response.ID, c.channel.ID)
 		if e != nil {
 			release(e, false)
+			var apiError *APIError
+			if preparationExpired() && !errors.As(e, &apiError) {
+				e = problem(503, "cost_record_unavailable", "费用预留未能在调度时限内完成，请稍后重试")
+			}
+			attemptCancel()
 			return Assessment{}, e
 		}
 		c.attemptAt = time.Now()
-		assessment, usage, output, e := s.Engine.Assess(ctx, c.cfg, key, input, attemptImages...)
+		assessment, usage, output, e := s.Engine.Assess(attemptCtx, c.cfg, key, input, attemptImages...)
+		failoverExpired := !c.failoverDeadline.IsZero() && errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+		attemptCancel()
 		if pacer, ok := ctx.Value(evaluationPacingKey{}).(evaluationPacer); ok && usage.Attempted {
 			pacer[c.channel.ID] = c.attemptAt
 		}
@@ -677,6 +715,9 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 			release(ctx.Err(), usage.Attempted)
 			e = problem(504, "audit_timeout", "审核已取消或总调用时限耗尽")
 		} else {
+			if failoverExpired && errorCode(e) == "upstream_timeout" {
+				e = problem(504, "upstream_timeout", "模型调用达到调度时间预算，切换其他可用通道")
+			}
 			release(e, usage.Attempted)
 		}
 		response.ChannelID = c.channel.ID
@@ -699,6 +740,8 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		}
 		if usage.Attempted {
 			log.AttemptCount++
+			progress.totalAttempts++
+			progress.attempts[c.binding.Priority]++
 		}
 		settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		attempt.Cost, err = s.Store.SettleCost(settleCtx, entry, usage, time.Now(), e)

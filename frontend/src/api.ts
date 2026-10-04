@@ -40,6 +40,8 @@ export interface Config {
   retention_days: number;
   total_timeout_ms: number;
   max_attempts: number;
+  max_attempts_per_priority?: number;
+  priority_timeout_ms?: number;
   failure_threshold?: number;
   failure_cooldown_minutes?: number;
   channels: ChannelBinding[];
