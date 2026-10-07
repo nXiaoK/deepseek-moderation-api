@@ -164,11 +164,15 @@ func TestAdminAndModerationLifecycle(t *testing.T) {
 	}
 	assertStockSub2APIDecision(t, response, true)
 	mu.Lock()
-	if sentPrompt != InitialPrompt {
-		t.Fatal("initial prompt was rewritten")
+	// Preserve the policy verbatim and append the separate JSON output contract.
+	if sentPrompt != InitialPrompt+"\n\n"+auditJSONOutputInstruction {
+		t.Fatal("initial prompt or appended JSON output contract was rewritten")
 	}
 	mu.Unlock()
 	p, _ = store.Policy(context.Background(), p.ID)
+	if p.Config.Prompt != InitialPrompt {
+		t.Fatal("output contract changed the stored policy prompt")
+	}
 	p.Config.Prompt = "custom prompt json"
 	p.Config.Threshold = .9
 	save(p, 200)
