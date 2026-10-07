@@ -216,8 +216,9 @@ func TestChannelRPMAPIPersistenceAndMigration(t *testing.T) {
 	if c.RPM != 0 {
 		t.Fatal("legacy channel should be unlimited")
 	}
-	// Replay the new migration over the previous schema, then ensure idempotence.
-	if _, err := store.DB.Exec("ALTER TABLE audit_model_channels DROP COLUMN rpm; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid; DROP TABLE email_notifications,email_settings; DELETE FROM audit_schema_migrations WHERE version>=4"); err != nil {
+	// Restore the version-3 schema, including removal of later migration objects,
+	// then replay all pending migrations and ensure idempotence.
+	if _, err := store.DB.Exec("ALTER TABLE audit_model_channels DROP COLUMN rpm; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid; ALTER TABLE provider_credentials DROP COLUMN api_format; DROP TABLE email_notifications,email_settings,audit_settings; DELETE FROM audit_schema_migrations WHERE version>=4"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
