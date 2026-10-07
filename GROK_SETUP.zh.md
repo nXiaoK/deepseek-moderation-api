@@ -36,16 +36,18 @@ Accept: text/event-stream
 {
   "model": "grok-4.6",
   "stream": true,
-  "temperature": 0,
   "max_output_tokens": 512,
   "text": {"format": {"type": "json_object"}},
   "reasoning": {"effort": "none"},
   "instructions": "后台保存的原审核提示词",
-  "input": "<user_input>待审核内容</user_input>"
+  "input": [
+    {"role": "developer", "content": "Return only a JSON object with exactly two fields: \"confidence\" (a number from 0 to 1) and \"reason\" (a string of at most 80 Unicode characters). Apply the configured audit policy. Do not include Markdown or any additional fields."},
+    {"role": "user", "content": "<user_input>待审核内容</user_input>"}
+  ]
 }
 ```
 
-不传 DeepSeek 的 `thinking` 参数，不要求专用响应头。审核分类不需要长推理，请求带 `reasoning.effort=none`，避免 Grok 先写几千个隐藏推理 tokens。若所用网关或模型拒绝 `none`，改用该网关支持的最低档（例如 `low`）或非推理型号。审核系统不执行模型工具调用，从 SSE（`response.output_text.delta` / `response.completed`）或非流式 Responses JSON 中组装文本，再严格解析为 `confidence` / `reason`。若网关忽略 `stream` 并返回普通 JSON，仍按 Responses 对象解析。普通网关自身的模型映射、账号管理和路由逻辑保持原样。sub2api 需要提供 `/v1/responses`；仅实现 `/v1/chat/completions` 的网关不能用于 Grok。
+不传 DeepSeek 的 `thinking` 参数，不要求专用响应头。审核分类不需要长推理，请求带 `reasoning.effort=none`，避免 Grok 先写几千个隐藏推理 tokens。若所用网关或模型拒绝 `none`，改用该网关支持的最低档（例如 `low`）或非推理型号。审核系统不执行模型工具调用，从 SSE（`response.output_text.delta`，以 `response.completed` 或 `response.done` 结束）或非流式 Responses JSON 中组装文本，再严格解析为 `confidence` / `reason`。若网关忽略 `stream` 并返回普通 JSON，仍按 Responses 对象解析。成功终止事件仍须携带 `status=completed`，错误、截断、缺失终止事件或仅有 `[DONE]` 的流不能作为有效结果。`instructions` 保留策略提示词，独立的 developer 消息声明 JSON 输出契约（示例为默认 80 字，实际随系统设置变化），以兼容只检查输入消息的 JSON 模式校验。普通网关自身的模型映射、账号管理和路由逻辑保持原样。sub2api 需要提供 `/v1/responses`；仅实现 `/v1/chat/completions` 的网关不能用于 Grok。
 
 ## 3. 避免回接循环
 
@@ -66,4 +68,4 @@ Accept: text/event-stream
 
 该实现使用新的当前配置及模型通道表结构，不迁移旧开发数据。使用空数据库初始化。本次仅更改独立审核项目，不修改 sub2api 的代码、数据库或部署。
 
-对外适配原版 sub2api：`model=策略别名`，`results[0].flagged` 为策略判定，`categories.illicit` 同步判定，`category_scores.illicit` 在命中时为 1、未命中时为 0。`illicit` 仅作为原版内置分类的兼容载体；真实评分、阈值和原因保留在 `audit` 元数据及本服务后台。原版 sub2api 忽略 `audit`，无需 `custom_audit` 代码。接入配置与前置 Hash 缓存等限制见 [README](README.md#sub2api-接入)。
+已按 sub2api v0.2.14、`origin/main` 提交 `3f1a2ea0a760730e3bc528105c00b4ee4f23e469` 核对内容审计及普通模型接口源码；本地契约回归不代替真实模型联调。对外接入时，在“内容审计设置 → 基础”选择 **OpenAI** 引擎，TypeSafe AI 引擎使用不同协议。对外适配原版 sub2api：`model=策略别名`，`results[0].flagged` 为策略判定，`categories.illicit` 同步判定，`category_scores.illicit` 在命中时为 1、未命中时为 0。`illicit` 仅作为原版内置分类的兼容载体；真实评分、阈值和原因保留在 `audit` 元数据及本服务后台。原版 sub2api 忽略 `audit`，无需 `custom_audit` 代码。接入配置与前置 Hash 缓存等限制见 [README](README.md#sub2api-接入)。

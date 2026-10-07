@@ -1,13 +1,14 @@
 package audit
 
 // SPDX-License-Identifier: LGPL-3.0-only
-// Frozen protocol fixture from Wei-Shaw/sub2api, origin/main
-// 4726bdd08b6201d426a80529b79be123a4008d20:
-// backend/internal/service/content_moderation.go. These are the unmodified
-// response decoder types, default thresholds and decision function. Keeping
-// this independent of our response builder catches wire compatibility bugs.
-// Only used in tests; no sub2api runtime dependency or project changes.
-// Upstream license: testdata/sub2api-LICENSE.txt.
+// Frozen protocol fixture from Wei-Shaw/sub2api v0.2.14, origin/main
+// 3f1a2ea0a760730e3bc528105c00b4ee4f23e469:
+// backend/internal/service/content_moderation.go and
+// backend/internal/service/content_moderation_engines.go. These are the
+// unmodified response decoder types, engine metadata, default thresholds and
+// decision function. Keeping this independent of our response builder catches
+// wire compatibility bugs. Only used in tests; no sub2api runtime dependency
+// or project changes. Upstream license: testdata/sub2api-LICENSE.txt.
 
 var contentModerationCategoryOrder = []string{
 	"harassment",
@@ -43,13 +44,22 @@ func ContentModerationDefaultThresholds() map[string]float64 {
 	}
 }
 
+type ContentModerationEngineMeta struct {
+	Engine        string `json:"engine"`
+	Model         string `json:"model"`
+	RulesVersion  string `json:"rules_version"`
+	SkippedImages int    `json:"skipped_images"`
+}
+
 type moderationAPIResponse struct {
+	Model   string                `json:"model"`
 	Results []moderationAPIResult `json:"results"`
 }
 
 type moderationAPIResult struct {
-	Flagged        bool               `json:"flagged"`
-	CategoryScores map[string]float64 `json:"category_scores"`
+	EngineMeta     *ContentModerationEngineMeta `json:"-"`
+	Flagged        bool                         `json:"flagged"`
+	CategoryScores map[string]float64           `json:"category_scores"`
 }
 
 func evaluateModerationScores(scores map[string]float64, thresholds map[string]float64) (bool, string, float64) {

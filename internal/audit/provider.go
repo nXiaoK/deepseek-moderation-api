@@ -315,7 +315,7 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 			}
 		case "response.failed", "error":
 			return problem(502, "invalid_model_response", "模型未完整返回审核结果")
-		case "response.completed", "response.incomplete":
+		case "response.completed", "response.done", "response.incomplete":
 			raw := ev.Response
 			if len(raw) == 0 {
 				raw = []byte(payload)
@@ -323,7 +323,7 @@ func parseGrokSSE(r io.Reader) (string, grokResponse, error) {
 			if json.Unmarshal(raw, &env) != nil {
 				return problem(502, "invalid_model_response", "模型响应 JSON 无效")
 			}
-			if ev.Type != "response.completed" || env.Status != "completed" {
+			if ev.Type == "response.incomplete" || env.Status != "completed" {
 				return problem(502, "invalid_model_response", "模型未完整返回审核结果")
 			}
 			completed = true
