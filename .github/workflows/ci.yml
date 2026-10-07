@@ -33,7 +33,6 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       AUDIT_TEST_DATABASE_URL: postgres://audit:test-password@127.0.0.1:5432/audit?sslmode=disable
-      AUDIT_TEST_PG_CONTAINER: ${{ job.services.postgres.id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -43,6 +42,8 @@ jobs:
       - name: Check Go formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Unit, PostgreSQL, race and restore checks
+        env:
+          AUDIT_TEST_PG_CONTAINER: ${{ job.services.postgres.id }}
         run: go test -race ./... -count=1
   frontend:
     runs-on: ubuntu-latest
