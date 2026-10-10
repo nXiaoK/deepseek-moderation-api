@@ -28,6 +28,8 @@ cd deepseek-moderation-api
 
 安装脚本生成随机凭据，初始管理员密码从 `.env` 的 `ADMIN_PASSWORD` 读取，不会输出到日志。已有 `.env` 不会被覆盖；首次安装失败可用 `./install.sh --resume` 重试。远程访问请参考[脚本说明](UPDATING.md)的 SSH 隧道 / HTTPS 配置。
 
+Debian 的标准 Docker Compose 部署可在原源码目录运行 `sudo ./install-auto-update.sh`，启用每小时检查 `origin/main`；有可快进的新提交时自动执行 `./update.sh`，失败后下次检查重试。日志使用 `journalctl -u deepseek-audit-auto-update.service` 查看，安装、停用及运行用户要求见[每小时自动升级说明](UPDATING.md#每小时自动升级debian)。
+
 ### 手动启动 / 开发
 
 需要 Go 1.26+、Node 20.19+、pnpm 10，以及 PostgreSQL 17 或 Docker。

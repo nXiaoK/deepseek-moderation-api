@@ -52,6 +52,8 @@ curl --fail http://127.0.0.1:8090/readyz
 
 看到 `{"ok":true}` 表示应用和数据库已连通。Compose 默认把应用端口绑定到 `127.0.0.1:8090`，数据库不暴露到宿主机公网。
 
+Debian 上需要每小时自动检查 Git 并升级时，在原部署目录运行 `sudo ./install-auto-update.sh`。它通过宿主机 systemd timer 检查 `origin/main`，有新提交后调用 `./update.sh`；详见[自动升级说明](UPDATING.md#每小时自动升级debian)。
+
 查看日志或停止服务：
 
 ```bash

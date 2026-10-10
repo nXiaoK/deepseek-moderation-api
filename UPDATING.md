@@ -67,6 +67,54 @@ docker compose --env-file .env -p deepseek-audit -f compose.yaml up -d --no-deps
 
 即使源码版本没有变化，也会重新构建和部署，可用于重新尝试之前失败的构建。仍需要干净的 Git 工作区。
 
+### 每小时自动升级（Debian）
+
+已有标准 Docker Compose 部署可在 **Debian 宿主机的原源码目录**安装 systemd timer：
+
+```bash
+# 先手动升级到包含这两个新脚本的版本
+./update.sh
+sudo ./install-auto-update.sh
+systemctl list-timers deepseek-audit-auto-update.timer
+```
+
+默认以部署目录的所有者运行检查和升级，该用户需要能读写源码与 `.git`、读取 `.env`、访问 Docker，并能无需交互地读取 Git 远端。私有仓库请为该用户配置 Git 凭据或 SSH 密钥。不要只给 root 配置远端凭据，却让另一个用户运行任务。安装前会检查该用户的本地 Git 和 Docker 权限；系统依赖包括 Bash、Git、Python 3、`util-linux`（`flock` / `runuser`）及 `coreutils`（`timeout`）。
+
+需要明确指定已有部署用户时：
+
+```bash
+sudo ./install-auto-update.sh --user deploy
+# 仅预览生成的 service / timer，不写系统配置、不执行升级
+./install-auto-update.sh --print --user deploy
+```
+
+timer 每小时整点检查，另加最多 60 秒随机延迟；服务器关机期间错过的检查会在重新启动后补做一次，不补跑每个错过的小时。安装完成后可主动执行一次检查：
+
+```bash
+sudo systemctl start deepseek-audit-auto-update.service
+journalctl -u deepseek-audit-auto-update.service -n 100 --no-pager
+# 持续查看下一次升级的输出
+journalctl -u deepseek-audit-auto-update.service -f
+```
+
+也可用任务的运行用户手动运行 `./auto-update.sh`。脚本只跟踪 `origin/main`：无新提交时不构建；发现可快进的新提交后执行 `./update.sh`，沿用现有备份、Compose 身份检查和健康检查。分支不是 `main`、工作区存在未提交改动、本地领先远端或分叉时拒绝自动升级。远端获取超过 120 秒或失败时保留当前部署，等待下一小时重试。自动检查之间使用文件锁；已有安装或更新锁时跳过本次检查，不自动删除遗留的 `.deploy.lock`。
+
+升级成功前，在 `.git/audit-auto-update.pending` 保存重试标记。即使 `update.sh` 已快进 Git、随后构建失败，下次也会重试，不会误认为已经部署完成。标记在成功后删除，不影响 Git 工作区。镜像回退、数据库迁移不兼容等仍需按下文人工恢复，定时器不会重置 Git 或自动还原数据库。
+
+自动升级仍会停止应用以备份数据库，并且每次升级保留备份和旧镜像；应按下文说明管理磁盘空间。它只适用于本文件支持的 `app` + `db` 标准 Compose 部署，不用于 1Panel、外部 PostgreSQL 或原生应用部署。
+
+暂时停用或卸载：
+
+```bash
+sudo systemctl disable --now deepseek-audit-auto-update.timer
+# 重新启用
+sudo systemctl enable --now deepseek-audit-auto-update.timer
+# 在原源码目录卸载本项目的两个 unit 文件
+sudo ./install-auto-update.sh --uninstall
+```
+
+停用或卸载只阻止后续检查，已开始的升级会继续完成；不要在数据库备份或容器切换期间强行终止 service。一个宿主机默认只安装一套 `deepseek-audit-auto-update` 定时任务，重复安装可更新同一目录的配置，不能直接覆盖其他部署目录的任务。
+
 ### 更新顺序与保护
 
 1. 从容器的 Compose 标签识别原目录、项目名、应用容器、数据库容器和数据卷。兼容原先按目录名创建的项目，不会强制改为新安装的项目名。
@@ -159,6 +207,6 @@ docker compose --project-directory "$PWD" --env-file "$BACKUP/.env" \
 离线回归测试（使用模拟 Docker / Git，覆盖原部署识别、凭据保护、备份与失败处理）：
 
 ```bash
-bash -n install.sh update.sh deploy/scripts-common.sh
-python3 -B -m unittest discover -s tests -p 'test_deploy_scripts.py' -v
+bash -n install.sh update.sh auto-update.sh install-auto-update.sh deploy/scripts-common.sh
+python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
