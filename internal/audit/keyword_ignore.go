@@ -14,11 +14,15 @@ func (c PolicySettings) ignoresKeywords(input string) bool {
 	return false
 }
 
-// A bypass has no billing rows. Derive its zero cost when reading records too.
-func keywordIgnoreCost(cost *CostView, ignored bool) *CostView {
-	if cost != nil || !ignored {
+// Keyword decisions have no billing rows. Derive zero cost on record reads too.
+func keywordRuleCost(cost *CostView, ignored, blocked bool) *CostView {
+	if cost != nil || !ignored && !blocked {
 		return cost
 	}
+	note := "关键词忽略，未调用模型"
+	if blocked {
+		note = "关键词阻止，未调用模型"
+	}
 	zero := "0"
-	return &CostView{Status: "zero", AmountCNY: &zero, ReservedCNY: zero, Note: "关键词忽略，未调用模型"}
+	return &CostView{Status: "zero", AmountCNY: &zero, ReservedCNY: zero, Note: note}
 }

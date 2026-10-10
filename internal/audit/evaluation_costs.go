@@ -85,5 +85,5 @@ func (r *EvaluationResult) applyCosts(costs map[string]evaluationCost) {
 			r.Cost.Note = "存在待核对调用；已知费用小计 ¥" + amount
 		}
 	}
-	r.Cost = keywordIgnoreCost(r.Cost, r.KeywordIgnored)
+	r.Cost = keywordRuleCost(r.Cost, r.KeywordIgnored, r.KeywordBlocked)
 }

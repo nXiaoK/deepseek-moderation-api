@@ -72,6 +72,15 @@ func TestEvaluationPacingUsesEachAttemptStartAndTarget(t *testing.T) {
 	if delay := pacer.delay(plan, "", "skip", now); delay != 0 {
 		t.Fatal("keyword bypass delayed", delay)
 	}
+	plan.Policy.Config.KeywordBlockEnabled = true
+	plan.Policy.Config.KeywordBlockMatchMode = "exact"
+	plan.Policy.Config.BlockKeywords = []string{"hi"}
+	if delay := pacer.delay(plan, "", "hi", now); delay != 0 {
+		t.Fatal("keyword block delayed", delay)
+	}
+	if delay := pacer.delay(plan, "", "hi xxx", now); delay != 8*time.Second {
+		t.Fatal("exact miss bypassed pacing", delay)
+	}
 }
 
 func TestEvaluationPacingWaitAndCancellation(t *testing.T) {

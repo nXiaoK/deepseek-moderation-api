@@ -45,6 +45,7 @@ interface Result {
   model: string;
   confidence: number | null;
   keyword_ignored?: boolean;
+  keyword_blocked?: boolean;
   flagged: boolean;
   threshold: number;
   reason: string;
@@ -808,7 +809,9 @@ onBeforeUnmount(() => {
                   <span
                     v-if="
                       row.status === 'completed' &&
-                      (row.confidence != null || row.keyword_ignored)
+                      (row.confidence != null ||
+                        row.keyword_ignored ||
+                        row.keyword_blocked)
                     "
                     class="badge"
                     :class="
@@ -818,11 +821,13 @@ onBeforeUnmount(() => {
                         : 'green'
                     "
                     >{{
-                      row.keyword_ignored
-                        ? "关键词忽略"
-                        : row.flagged
-                          ? "命中"
-                          : "放行"
+                      row.keyword_blocked
+                        ? "关键词阻止"
+                        : row.keyword_ignored
+                          ? "关键词忽略"
+                          : row.flagged
+                            ? "命中"
+                            : "放行"
                     }}</span
                   ><span v-else class="badge gray">{{
                     statusLabels[row.status] || row.status

@@ -510,6 +510,8 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		where = append(where, "flagged=FALSE AND error_code=''")
 	case "keyword_ignored":
 		where = append(where, "metadata->>'keyword_ignored'='true' AND error_code=''")
+	case "keyword_blocked":
+		where = append(where, "metadata->>'keyword_blocked'='true' AND error_code=''")
 	case "error":
 		where = append(where, "error_code<>''")
 	}
@@ -561,7 +563,7 @@ func (s *Store) Logs(ctx context.Context, f LogFilter) ([]AuditLog, int, error) 
 		return nil, 0, err
 	}
 	for i := range logs {
-		logs[i].Cost = keywordIgnoreCost(costs[logs[i].ID], logs[i].KeywordIgnored)
+		logs[i].Cost = keywordRuleCost(costs[logs[i].ID], logs[i].KeywordIgnored, logs[i].KeywordBlocked)
 	}
 	return logs, count, nil
 }
@@ -590,7 +592,7 @@ func (s *Store) LogDetail(ctx context.Context, id string) (AuditLog, error) {
 		return l, err
 	}
 	l.Cost, err = s.requestCost(ctx, id)
-	l.Cost = keywordIgnoreCost(l.Cost, l.KeywordIgnored)
+	l.Cost = keywordRuleCost(l.Cost, l.KeywordIgnored, l.KeywordBlocked)
 	if err != nil {
 		return l, err
 	}

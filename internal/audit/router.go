@@ -436,7 +436,7 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 		s.notePersistenceFailure(id, "cost_summary")
 		err = problem(503, "cost_record_unavailable", "费用汇总暂时不可用")
 	}
-	cost = keywordIgnoreCost(cost, log.KeywordIgnored)
+	cost = keywordRuleCost(cost, log.KeywordIgnored, log.KeywordBlocked)
 	response.Cost = cost
 	response.LatencyMS = time.Since(start).Milliseconds()
 	response.AttemptCount = log.AttemptCount
@@ -457,6 +457,13 @@ func (s *Server) runAudit(ctx context.Context, p Policy, channels []ModelChannel
 			verdict.Categories["illicit"] = false
 			verdict.Scores["illicit"] = 0
 			verdict.Audit.KeywordIgnored = true
+			log.Confidence = nil
+		}
+		if log.KeywordBlocked {
+			verdict.Flagged = true
+			verdict.Categories["illicit"] = true
+			verdict.Scores["illicit"] = 1
+			verdict.Audit.KeywordBlocked = true
 			log.Confidence = nil
 		}
 		log.Flagged = verdict.Flagged
@@ -530,6 +537,13 @@ func (s *Server) executeRoute(ctx context.Context, p Policy, channels []ModelCha
 		if !valid {
 			return Assessment{}, problem(400, "invalid_channel", "请选择策略中已启用的通道")
 		}
+	}
+	// Blocking wins when the same input also matches an ignore rule.
+	if p.Config.blocksKeywords(input) {
+		log.KeywordBlocked = true
+		log.ModelOutputStored = false
+		response.InputScope = "keyword_blocked"
+		return Assessment{Confidence: 1, Reason: "关键词阻止，未调用模型"}, nil
 	}
 	if p.Config.ignoresKeywords(input) {
 		log.KeywordIgnored = true

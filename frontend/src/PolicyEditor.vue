@@ -13,14 +13,18 @@ import {
 import AttemptList from "./AttemptList.vue";
 const config = defineModel<Config>({ required: true });
 const keywordText = ref((config.value.ignore_keywords || []).join("\n"));
+const blockKeywordText = ref((config.value.block_keywords || []).join("\n"));
 watch(config, (value) => {
   keywordText.value = (value.ignore_keywords || []).join("\n");
+  blockKeywordText.value = (value.block_keywords || []).join("\n");
 });
-function updateKeywords(event: Event) {
-  keywordText.value = (event.target as HTMLTextAreaElement).value;
-  config.value.ignore_keywords = [
+function updateKeywords(event: Event, kind: "ignore" | "block") {
+  const text = (event.target as HTMLTextAreaElement).value;
+  const target = kind === "ignore" ? keywordText : blockKeywordText;
+  target.value = text;
+  config.value[kind === "ignore" ? "ignore_keywords" : "block_keywords"] = [
     ...new Set(
-      keywordText.value
+      text
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean),
@@ -207,6 +211,44 @@ async function test() {
     </div>
     <label class="check-row">
       <input
+        v-model="config.keyword_block_enabled"
+        type="checkbox"
+        :disabled="busy"
+      />
+      <span>关键词阻止</span>
+    </label>
+    <template v-if="config.keyword_block_enabled">
+      <div class="segmented" role="group" aria-label="阻止关键词匹配模式">
+        <button
+          type="button"
+          :aria-pressed="config.keyword_block_match_mode !== 'exact'"
+          :disabled="busy"
+          @click="config.keyword_block_match_mode = 'contains'"
+        >
+          模糊匹配
+        </button>
+        <button
+          type="button"
+          :aria-pressed="config.keyword_block_match_mode === 'exact'"
+          :disabled="busy"
+          @click="config.keyword_block_match_mode = 'exact'"
+        >
+          完整匹配
+        </button>
+      </div>
+      <label>
+        阻止关键词或短语（每行一条，区分大小写）
+        <textarea
+          :value="blockKeywordText"
+          rows="5"
+          :disabled="busy"
+          maxlength="16100"
+          @input="updateKeywords($event, 'block')"
+        />
+      </label>
+    </template>
+    <label class="check-row">
+      <input
         v-model="config.keyword_ignore_enabled"
         type="checkbox"
         :disabled="busy"
@@ -220,7 +262,7 @@ async function test() {
         rows="5"
         :disabled="busy"
         maxlength="16100"
-        @input="updateKeywords"
+        @input="updateKeywords($event, 'ignore')"
       />
     </label>
     <label
@@ -601,16 +643,19 @@ async function test() {
         class="badge"
         :class="result.results[0].flagged ? 'red' : 'green'"
         >{{
-          result.results[0].audit.keyword_ignored
-            ? "关键词忽略 · 未命中"
-            : result.results[0].flagged
-              ? "命中策略"
-              : "未命中"
+          result.results[0].audit.keyword_blocked
+            ? "关键词阻止 · 命中"
+            : result.results[0].audit.keyword_ignored
+              ? "关键词忽略 · 未命中"
+              : result.results[0].flagged
+                ? "命中策略"
+                : "未命中"
         }}</span
       >
       <div class="score">
         {{
-          result.results[0].audit.keyword_ignored
+          result.results[0].audit.keyword_ignored ||
+          result.results[0].audit.keyword_blocked
             ? "—"
             : result.results[0].audit.confidence.toFixed(2)
         }}<span>模型评分 · 阈值 {{ result.results[0].audit.threshold }}</span>

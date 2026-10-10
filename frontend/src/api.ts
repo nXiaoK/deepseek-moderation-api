@@ -29,6 +29,9 @@ export interface ChannelBinding {
   enabled: boolean;
 }
 export interface Config {
+  keyword_block_enabled?: boolean;
+  keyword_block_match_mode?: "contains" | "exact";
+  block_keywords?: string[];
   keyword_ignore_enabled?: boolean;
   ignore_keywords?: string[];
   store_model_output?: boolean;
@@ -146,6 +149,7 @@ export interface ClientKey {
   created_at: string;
 }
 export interface Metadata {
+  keyword_blocked?: boolean;
   keyword_ignored?: boolean;
   schema_version: number;
   policy_id: string;
@@ -173,6 +177,7 @@ export interface AuditResponse {
   }[];
 }
 export interface AuditLog {
+  keyword_blocked?: boolean;
   keyword_ignored?: boolean;
   model_output_stored?: boolean;
   request?: {

@@ -32,7 +32,7 @@ func evaluationChannels(plan evaluationPlan, target string) []ModelChannel {
 }
 
 func (p evaluationPacer) delay(plan evaluationPlan, target, input string, now time.Time) time.Duration {
-	if plan.Policy.Config.ignoresKeywords(input) {
+	if plan.Policy.Config.blocksKeywords(input) || plan.Policy.Config.ignoresKeywords(input) {
 		return 0
 	}
 	var delay time.Duration

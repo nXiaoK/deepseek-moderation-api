@@ -263,7 +263,7 @@ const detailModelOutput = computed(() =>
 );
 const showStandaloneOutput = computed(() => {
   const log = detail.value;
-  if (log?.keyword_ignored) return false;
+  if (log?.keyword_ignored || log?.keyword_blocked) return false;
   if (!log?.attempts?.length) return true;
   return (
     !!detailModelOutput.value &&
@@ -1454,6 +1454,7 @@ window.addEventListener("beforeunload", (e) => {
                 >结果<select v-model="logResult">
                   <option value="">全部</option>
                   <option value="flagged">命中</option>
+                  <option value="keyword_blocked">关键词阻止</option>
                   <option value="allow">未命中</option>
                   <option value="error">失败 / 拒绝</option>
                 </select></label
@@ -1875,8 +1876,8 @@ window.addEventListener("beforeunload", (e) => {
           </template>
           <template v-else>用量未返回</template>
         </dd>
-        <dt v-if="detail.keyword_ignored">费用</dt>
-        <dd v-if="detail.keyword_ignored">
+        <dt v-if="detail.keyword_ignored || detail.keyword_blocked">费用</dt>
+        <dd v-if="detail.keyword_ignored || detail.keyword_blocked">
           {{ auditCost(detail) }} · {{ auditCostStatus(detail) }}
         </dd>
       </dl>

@@ -41,6 +41,7 @@ type EvaluationResult struct {
 	RequestIDs     []string  `json:"request_ids,omitempty"`
 	KnownCostCNY   string    `json:"known_cost_cny,omitempty"`
 	KeywordIgnored bool      `json:"keyword_ignored,omitempty"`
+	KeywordBlocked bool      `json:"keyword_blocked,omitempty"`
 	Sequence       int       `json:"sequence"`
 	SampleID       string    `json:"sample_id"`
 	SampleName     string    `json:"sample_name"`
@@ -226,7 +227,7 @@ func (s *Server) estimateEvaluationTrial(ctx context.Context, plan evaluationPla
 	if target != "" && !slices.ContainsFunc(plan.Policy.Config.Channels, func(b ChannelBinding) bool { return b.Enabled && b.ChannelID == target }) {
 		return 0, problem(400, "invalid_channel", "请选择策略中已启用的通道")
 	}
-	if plan.Policy.Config.ignoresKeywords(input) {
+	if plan.Policy.Config.blocksKeywords(input) || plan.Policy.Config.ignoresKeywords(input) {
 		return 0, nil
 	}
 	values := []int64{}
@@ -456,7 +457,8 @@ func (s *Server) executeEvaluation(ctx context.Context, id, username string, pla
 						verdict := response.Results[0]
 						result.Confidence = &verdict.Audit.Confidence
 						result.KeywordIgnored = verdict.Audit.KeywordIgnored
-						if result.KeywordIgnored {
+						result.KeywordBlocked = verdict.Audit.KeywordBlocked
+						if result.KeywordIgnored || result.KeywordBlocked {
 							result.Confidence = nil
 						}
 						result.Flagged = verdict.Flagged

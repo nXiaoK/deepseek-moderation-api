@@ -98,7 +98,7 @@ func evaluationScores(results []EvaluationResult) ([]EvaluationScore, error) {
 		}
 		group.score.Processed++
 		group.latency += result.LatencyMS
-		if result.Status != "completed" || result.Confidence == nil && !result.KeywordIgnored {
+		if result.Status != "completed" || result.Confidence == nil && !result.KeywordIgnored && !result.KeywordBlocked {
 			group.score.Errors++
 			continue
 		}
@@ -220,6 +220,9 @@ func (s *Server) exportEvaluation(w http.ResponseWriter, r *http.Request) error 
 		status := row.Status
 		if row.KeywordIgnored && row.Status == "completed" {
 			status, flagged = "关键词忽略", "false"
+		}
+		if row.KeywordBlocked && row.Status == "completed" {
+			status, flagged = "关键词阻止", "true"
 		}
 		cells := []string{row.SampleName, targets[row.Target], strconv.Itoa(row.Iteration), row.Expected, status, flagged, confidence, strconv.FormatFloat(row.Threshold, 'g', -1, 64), strconv.FormatInt(row.LatencyMS, 10), cost, row.RequestID, row.ErrorCode, strconv.Itoa(max(0, len(row.requestIDs())-1)), strings.Join(row.requestIDs(), " ")}
 		for i := range cells {

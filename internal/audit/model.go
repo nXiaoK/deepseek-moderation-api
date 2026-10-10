@@ -88,6 +88,9 @@ type ChannelBinding struct {
 	Enabled   bool   `json:"enabled"`
 }
 type PolicySettings struct {
+	KeywordBlockEnabled      bool             `json:"keyword_block_enabled"`
+	KeywordBlockMatchMode    string           `json:"keyword_block_match_mode,omitempty"`
+	BlockKeywords            []string         `json:"block_keywords,omitempty"`
 	KeywordIgnoreEnabled     bool             `json:"keyword_ignore_enabled"`
 	IgnoreKeywords           []string         `json:"ignore_keywords,omitempty"`
 	StoreModelOutput         *bool            `json:"store_model_output,omitempty"`
@@ -142,19 +145,14 @@ func (c PolicySettings) retainModelOutput() bool {
 	return c.StoreModelOutput == nil || *c.StoreModelOutput
 }
 func (c PolicySettings) Validate() error {
-	if len(c.IgnoreKeywords) > 100 {
-		return errors.New("忽略关键词最多 100 条")
+	if c.KeywordBlockMatchMode != "" && c.KeywordBlockMatchMode != "contains" && c.KeywordBlockMatchMode != "exact" {
+		return errors.New("关键词阻止匹配模式必须为 contains 或 exact")
 	}
-	total := 0
-	for _, keyword := range c.IgnoreKeywords {
-		size := utf8.RuneCountInString(keyword)
-		if strings.TrimSpace(keyword) == "" || size > 1000 {
-			return errors.New("忽略关键词不能为空或纯空白，每条最多 1000 个字符")
-		}
-		total += size
+	if err := validateKeywordList(c.BlockKeywords, "阻止"); err != nil {
+		return err
 	}
-	if total > 16000 {
-		return errors.New("忽略关键词合计最多 16000 个字符")
+	if err := validateKeywordList(c.IgnoreKeywords, "忽略"); err != nil {
+		return err
 	}
 	if c.ModelOutputRetentionDays < 0 || c.ModelOutputRetentionDays > 365 {
 		return errors.New("模型输出保留时间必须为 1～365 天")
@@ -268,6 +266,7 @@ type Assessment struct {
 	Reason     string  `json:"reason"`
 }
 type AuditMetadata struct {
+	KeywordBlocked bool    `json:"keyword_blocked,omitempty"`
 	KeywordIgnored bool    `json:"keyword_ignored,omitempty"`
 	SchemaVersion  int     `json:"schema_version"`
 	PolicyID       string  `json:"policy_id"`
@@ -310,6 +309,7 @@ type Response struct {
 	LatencyMS    int64          `json:"latency_ms"`
 }
 type AuditLog struct {
+	KeywordBlocked           bool           `json:"keyword_blocked,omitempty"`
 	KeywordIgnored           bool           `json:"keyword_ignored,omitempty"`
 	ModelOutputStored        bool           `json:"model_output_stored"`
 	ModelOutputRetentionDays int            `json:"-"`

@@ -99,6 +99,8 @@ func hitEmail(l AuditLog, origin string) (string, string) {
 	confidence := "未知"
 	if l.Confidence != nil {
 		confidence = strconv.FormatFloat(*l.Confidence, 'f', -1, 64)
+	} else if l.KeywordBlocked {
+		confidence = "关键词阻止，未调用模型"
 	}
 	// Never include raw input, images, model output, or caller credentials.
 	return "内容审核命中提醒", fmt.Sprintf("正式审核发现命中，请登录管理后台查看审核记录。\n\n请求 ID：%s\n时间：%s\n策略 ID：%s\n调用方 ID：%s\n模型：%s\n模型评分：%s\n命中阈值：%g\n原因：%s\n结果缓存：%t\n\n管理后台：%s\n在“审核记录”中按请求 ID 查找详情。",
