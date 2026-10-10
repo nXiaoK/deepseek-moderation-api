@@ -23,6 +23,10 @@ func parseLogFilter(q url.Values) (LogFilter, error) {
 		size = 20
 	}
 	f := LogFilter{Page: page, PageSize: size, Kind: q.Get("kind"), PolicyID: q.Get("policy_id"), ClientID: q.Get("client_id"), Result: q.Get("result"), From: q.Get("from"), To: q.Get("to"), RequestID: strings.TrimSpace(q.Get("request_id")), Model: q.Get("model"), ChannelID: q.Get("channel_id"), ErrorCode: q.Get("error_code")}
+	f.InputFingerprint = q.Get("input_fingerprint")
+	if f.InputFingerprint != "" && !inputFingerprintPattern.MatchString(f.InputFingerprint) {
+		return f, problem(400, "invalid_filter", "输入指纹无效")
+	}
 	f.KeywordIgnore = q.Get("keyword_ignore")
 	switch f.KeywordIgnore {
 	case "", "exclude", "include", "only":

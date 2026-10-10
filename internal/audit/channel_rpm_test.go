@@ -218,7 +218,7 @@ func TestChannelRPMAPIPersistenceAndMigration(t *testing.T) {
 	}
 	// Restore the version-3 schema, including removal of later migration objects,
 	// then replay all pending migrations and ensure idempotence.
-	if _, err := store.DB.Exec("ALTER TABLE audit_model_channels DROP COLUMN rpm; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid; ALTER TABLE provider_credentials DROP COLUMN api_format; DROP TABLE email_notifications,email_settings,audit_settings; DELETE FROM audit_schema_migrations WHERE version>=4"); err != nil {
+	if _, err := store.DB.Exec("ALTER TABLE audit_model_channels DROP COLUMN rpm; ALTER TABLE audit_costs DROP COLUMN IF EXISTS reservation_valid; ALTER TABLE provider_credentials DROP COLUMN api_format; ALTER TABLE audit_requests DROP COLUMN input_fingerprint, DROP COLUMN input_fingerprint_checked; DROP TABLE email_notifications,email_settings,audit_settings; DELETE FROM audit_schema_migrations WHERE version>=4"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {

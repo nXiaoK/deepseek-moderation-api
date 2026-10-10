@@ -24,28 +24,30 @@ import (
 )
 
 type Server struct {
-	Store             *Store
-	Engine            *Engine
-	Origin            string
-	Secure            bool
-	StaticDir         string
-	dummyPassword     string
-	Runtime           RuntimeConfig
-	admission         requestAdmission
-	ingress           ingressGuard
-	loginIngress      ingressGuard
-	trustedProxies    []netip.Prefix
-	trialSlots        chan struct{}
-	backgroundContext context.Context
-	stopBackground    context.CancelFunc
-	evaluationMu      sync.Mutex
-	evaluationCancels map[string]context.CancelFunc
-	evaluationWorkers sync.WaitGroup
-	emailWorkers      sync.WaitGroup
-	emailStarted      bool
-	closing           bool
-	startedAt         time.Time
-	telemetry         auditTelemetry
+	Store              *Store
+	Engine             *Engine
+	Origin             string
+	Secure             bool
+	StaticDir          string
+	dummyPassword      string
+	Runtime            RuntimeConfig
+	admission          requestAdmission
+	ingress            ingressGuard
+	loginIngress       ingressGuard
+	trustedProxies     []netip.Prefix
+	trialSlots         chan struct{}
+	backgroundContext  context.Context
+	stopBackground     context.CancelFunc
+	evaluationMu       sync.Mutex
+	evaluationCancels  map[string]context.CancelFunc
+	evaluationWorkers  sync.WaitGroup
+	emailWorkers       sync.WaitGroup
+	emailStarted       bool
+	inputWorkers       sync.WaitGroup
+	inputWorkerStarted bool
+	closing            bool
+	startedAt          time.Time
+	telemetry          auditTelemetry
 }
 type session struct {
 	Username  string
@@ -94,6 +96,7 @@ func (s *Server) Close() {
 	s.evaluationMu.Unlock()
 	s.evaluationWorkers.Wait()
 	s.emailWorkers.Wait()
+	s.inputWorkers.Wait()
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -153,6 +156,9 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /admin/audit-logs/export", s.exportLogs)
 	admin("GET /admin/audit-logs/{id}", s.logDetail)
 	admin("GET /admin/analytics", s.analytics)
+	admin("GET /admin/analytics/input-ranking", s.inputRanking)
+	admin("GET /admin/analytics/input-ranking/export", s.exportInputRanking)
+	admin("GET /admin/analytics/input-ranking/{fingerprint}", s.inputRankingDetail)
 	admin("GET /admin/operations", s.operations)
 	admin("GET /admin/runtime", func(w http.ResponseWriter, r *http.Request) error { return writeJSON(w, 200, s.Runtime) })
 	admin("GET /admin/evaluation/samples", s.evaluationSamples)

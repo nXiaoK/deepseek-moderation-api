@@ -13,6 +13,7 @@ export interface EvaluationSampleSeed {
   note: string;
 }
 export interface AnalysisLogFilter {
+  input_fingerprint?: string;
   from: string;
   to: string;
   kind: string;
@@ -21,6 +22,44 @@ export interface AnalysisLogFilter {
   client_id: string;
   channel_id: string;
   error_code?: string;
+}
+export interface InputRankingItem {
+  fingerprint: string;
+  preview: string | null;
+  input?: string;
+  sample_request_id?: string;
+  text_chars: number;
+  occurrences: number;
+  flagged: number;
+  keyword_blocked: number;
+  keyword_ignored: number;
+  model_flagged: number;
+  model_allowed: number;
+  errors: number;
+  cache_hits: number;
+  clients: number;
+  first_seen: string;
+  last_seen: string;
+}
+export interface InputRankingResponse {
+  from: string;
+  to: string;
+  policy_id: string;
+  client_id: string;
+  page: number;
+  page_size: number;
+  min_count: number;
+  total: number;
+  summary: {
+    indexed_requests: number;
+    unique_inputs: number;
+    repeated_inputs: number;
+    repeat_requests: number;
+    unindexed_requests: number;
+    backfill_pending: number;
+    oldest_retained_at: string | null;
+  };
+  items: InputRankingItem[];
 }
 export interface ChannelBinding {
   channel_id: string;

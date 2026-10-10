@@ -48,7 +48,7 @@ import {
 } from "./api";
 
 const AnalyticsPanel = defineAsyncComponent(
-  () => import("./AnalyticsPanel.vue"),
+  () => import("./AnalyticsWorkspace.vue"),
 );
 const EvaluationPanel = defineAsyncComponent(
   () => import("./EvaluationPanel.vue"),
@@ -205,6 +205,7 @@ const logItems = ref<AuditLog[]>([]),
   logClient = ref(""),
   logFrom = ref(""),
   logRequestID = ref(""),
+  logInputFingerprint = ref(""),
   logModel = ref(""),
   logChannel = ref(""),
   logErrorCode = ref(""),
@@ -226,7 +227,7 @@ const nav = [
 ] as const;
 const pageMeta: Record<string, [string, string]> = {
   overview: ["OVERVIEW", "过去 24 小时 · 正式请求"],
-  analytics: ["ANALYTICS", "模型用量与性能"],
+  analytics: ["ANALYTICS", "调用统计与输入排行"],
   logs: ["AUDIT LOGS", "审核请求与判定记录"],
   evaluations: ["EVALUATIONS", "标注样本与模型对照"],
   policies: ["POLICIES", "当前生效的规则与模型调度"],
@@ -646,6 +647,7 @@ function logQuery(page = logPage.value, pageSize = logPageSize.value) {
     page: String(page),
     page_size: String(pageSize),
     request_id: logRequestID.value.trim(),
+    input_fingerprint: logInputFingerprint.value,
     model: logModel.value,
     channel_id: logChannel.value,
     error_code: logErrorCode.value,
@@ -724,6 +726,7 @@ async function inspectAnalyticsLogs(filter: AnalysisLogFilter) {
   logChannel.value = filter.channel_id;
   logErrorCode.value = filter.error_code || "";
   logRequestID.value = "";
+  logInputFingerprint.value = filter.input_fingerprint || "";
   logResult.value = "";
   logKeywordIgnore.value = "include";
   logLatencyGT.value = "";
@@ -1417,6 +1420,23 @@ window.addEventListener("beforeunload", (e) => {
 
         <template v-if="page === 'logs'"
           ><section class="panel">
+            <div v-if="logInputFingerprint" class="row input-filter">
+              <span
+                >相同输入
+                <code>{{ logInputFingerprint.slice(0, 12) }}</code></span
+              >
+              <button
+                class="icon-button"
+                title="清除相同输入筛选"
+                aria-label="清除相同输入筛选"
+                @click="
+                  logInputFingerprint = '';
+                  filterLogs();
+                "
+              >
+                <AppIcon name="close" :size="16" />
+              </button>
+            </div>
             <form class="log-filters" @submit.prevent="filterLogs">
               <label
                 >请求 ID<input

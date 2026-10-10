@@ -309,6 +309,7 @@ type Response struct {
 	LatencyMS    int64          `json:"latency_ms"`
 }
 type AuditLog struct {
+	InputFingerprint         string         `json:"-"`
 	KeywordBlocked           bool           `json:"keyword_blocked,omitempty"`
 	KeywordIgnored           bool           `json:"keyword_ignored,omitempty"`
 	ModelOutputStored        bool           `json:"model_output_stored"`
@@ -340,6 +341,7 @@ type AuditLog struct {
 	CreatedAt                time.Time      `json:"created_at"`
 }
 type LogFilter struct {
+	InputFingerprint                           string
 	KeywordIgnore                              string
 	LatencyGTMS                                *int64
 	Page, PageSize                             int
