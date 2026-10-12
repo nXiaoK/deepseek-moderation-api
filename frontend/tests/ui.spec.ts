@@ -273,6 +273,18 @@ for (const width of [1440, 390]) {
       created_at: "2026-09-13T04:30:00Z",
     };
     let saved: Record<string, unknown> | undefined;
+    await page.route("**/admin/policies/policy-1", (route) =>
+      route.fulfill({
+        json: {
+          id: "policy-1",
+          name: "默认内容审核",
+          alias: "abuse-audit-v1",
+          enabled: true,
+          revision: 2,
+          config: saved || config,
+        },
+      }),
+    );
     await page.route("**/admin/policies/policy-1/config", async (route) => {
       saved = route.request().postDataJSON().config;
       await route.fulfill({
@@ -287,6 +299,10 @@ for (const width of [1440, 390]) {
       });
     });
     await page.route("**/admin/policies/policy-1/test", async (route) => {
+      expect(
+        route.request().postDataJSON().config.keyword_ignore_match_mode,
+      ).toBe("exact");
+      expect(route.request().postDataJSON().input).toBe("指定短语");
       expect(route.request().postDataJSON().config.ignore_keywords).toEqual([
         "指定短语",
         "Allow",
@@ -323,7 +339,13 @@ for (const width of [1440, 390]) {
       route.fulfill({ json: ignored }),
     );
     await page.goto("/");
-    await page.getByLabel("关键词忽略", { exact: true }).check();
+    const enabled = page.getByLabel("关键词忽略", { exact: true });
+    await enabled.check();
+    const modes = page.getByRole("group", { name: "忽略关键词匹配模式" });
+    await expect(
+      modes.getByRole("button", { name: "模糊匹配" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await modes.getByRole("button", { name: "完整匹配" }).click();
     const phrases = page.getByLabel(
       "忽略关键词或短语（每行一条，区分大小写）",
       { exact: true },
@@ -337,8 +359,32 @@ for (const width of [1440, 390]) {
       page.getByRole("button", { name: "保存并生效" }),
     ).toBeDisabled();
     expect(saved?.keyword_ignore_enabled).toBe(true);
+    expect(saved?.keyword_ignore_match_mode).toBe("exact");
     expect(saved?.ignore_keywords).toEqual(["指定短语", "Allow"]);
     await expect(phrases).toHaveValue("指定短语\nAllow");
+    await page.reload();
+    await expect(enabled).toBeChecked();
+    await expect(
+      modes.getByRole("button", { name: "完整匹配" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(phrases).toHaveValue("指定短语\nAllow");
+    await enabled.uncheck();
+    await enabled.check();
+    await expect(phrases).toHaveValue("指定短语\nAllow");
+    await expect(
+      modes.getByRole("button", { name: "完整匹配" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await modes.getByRole("button", { name: "模糊匹配" }).click();
+    await page.getByRole("button", { name: "保存并生效" }).click();
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeDisabled();
+    expect(saved?.keyword_ignore_match_mode).toBe("contains");
+    await modes.getByRole("button", { name: "完整匹配" }).click();
+    await page.getByRole("button", { name: "保存并生效" }).click();
+    await expect(
+      page.getByRole("button", { name: "保存并生效" }),
+    ).toBeDisabled();
     await page.screenshot({
       path: testInfo.outputPath("keyword-policy.png"),
       fullPage: true,
@@ -349,9 +395,7 @@ for (const width of [1440, 390]) {
       ),
     ).toBe(true);
     await page.getByRole("tab", { name: "审核试跑" }).click();
-    await page
-      .getByLabel("待审核内容", { exact: true })
-      .fill("前文指定短语后文");
+    await page.getByLabel("待审核内容", { exact: true }).fill("指定短语");
     await page.getByRole("button", { name: "运行审核", exact: true }).click();
     await expect(
       page.getByText("关键词忽略 · 未命中", { exact: true }),

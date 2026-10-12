@@ -13,16 +13,29 @@ import (
 func TestKeywordIgnoreMatchingAndValidation(t *testing.T) {
 	cfg := DefaultSettings()
 	cfg.KeywordIgnoreEnabled = true
-	cfg.IgnoreKeywords = []string{"指定短语", "Allow", "a.b"}
-	for _, tc := range []struct {
-		input string
-		want  bool
-	}{
-		{"前文指定短语后文", true}, {"Allow me", true}, {"allow me", false},
-		{"a.b", true}, {"axb", false}, {"指定 短语", false}, {"", false},
-	} {
-		if got := cfg.ignoresKeywords(tc.input); got != tc.want {
-			t.Errorf("%q: got %v want %v", tc.input, got, tc.want)
+	cfg.IgnoreKeywords = []string{"hi", "指定短语", "Allow", "a.b"}
+	for _, mode := range []string{"", "contains", "exact"} {
+		cfg.KeywordIgnoreMatchMode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatal("valid mode rejected", mode, err)
+		}
+		for _, tc := range []struct {
+			input           string
+			exact, contains bool
+		}{
+			{"hi", true, true}, {"hi xxx", false, true}, {"xxx hi", false, true},
+			{" hi ", false, true}, {"hi\n", false, true}, {"HI", false, false},
+			{"指定短语", true, true}, {"前文指定短语后文", false, true},
+			{"Allow", true, true}, {"Allow me", false, true}, {"allow me", false, false},
+			{"a.b", true, true}, {"axb", false, false}, {"指定 短语", false, false}, {"", false, false},
+		} {
+			want := tc.contains
+			if mode == "exact" {
+				want = tc.exact
+			}
+			if got := cfg.ignoresKeywords(tc.input); got != want {
+				t.Errorf("mode %q input %q: got %v want %v", mode, tc.input, got, want)
+			}
 		}
 	}
 	cfg.KeywordIgnoreEnabled = false
@@ -48,6 +61,94 @@ func TestKeywordIgnoreMatchingAndValidation(t *testing.T) {
 	}
 	if cfg.Validate() == nil {
 		t.Fatal("total keyword limit not enforced")
+	}
+	cfg.IgnoreKeywords = []string{"hi"}
+	for _, mode := range []string{"regex", "EXACT", " exact "} {
+		cfg.KeywordIgnoreMatchMode = mode
+		if cfg.Validate() == nil {
+			t.Fatal("invalid ignore match mode accepted", mode)
+		}
+	}
+}
+
+func TestKeywordIgnoreExactProductionTrialAndPolicyRoundTrip(t *testing.T) {
+	app, p, call := evaluationTestServer(t)
+	ctx := context.Background()
+	p.Config.KeywordIgnoreEnabled, p.Config.KeywordIgnoreMatchMode = true, "exact"
+	p.Config.IgnoreKeywords = []string{"hi"}
+	if err := app.Store.SaveConfig(ctx, "admin", p.ID, p.Name, p.Revision, p.Config); err != nil {
+		t.Fatal(err)
+	}
+	p, err := app.Store.Policy(ctx, p.ID)
+	if err != nil || p.Config.KeywordIgnoreMatchMode != "exact" {
+		t.Fatal("mode not persisted", p.Config, err)
+	}
+	copy, err := app.Store.CreatePolicy(ctx, "admin", "ignore exact copy", "ignore-exact-copy", p.ID)
+	if err != nil || copy.Config.KeywordIgnoreMatchMode != "exact" || !copy.Config.ignoresKeywords("hi") || copy.Config.ignoresKeywords("hi xxx") {
+		t.Fatal("copy lost ignore mode", copy.Config, err)
+	}
+	var exported policyFile
+	if err := json.Unmarshal(call("GET", "/admin/policies/"+p.ID+"/export", nil, 200), &exported); err != nil || exported.Config.KeywordIgnoreMatchMode != "exact" {
+		t.Fatal("export lost ignore mode", exported, err)
+	}
+	exported.Name, exported.Alias = "ignore exact import", "ignore-exact-import"
+	var imported Policy
+	if err := json.Unmarshal(call("POST", "/admin/policies/import", exported, 201), &imported); err != nil || imported.Config.KeywordIgnoreMatchMode != "exact" || !imported.Config.ignoresKeywords("hi") || imported.Config.ignoresKeywords("hi xxx") {
+		t.Fatal("import lost ignore mode", imported, err)
+	}
+	token, err := app.Store.CreateKey(ctx, "admin", "exact ignore caller", []string{p.ID}, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	app.Engine.Client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(cachedTestResponse))}, nil
+	})}
+	for _, tc := range []struct {
+		input   any
+		ignored bool
+	}{
+		{"hi", true}, {"hi xxx", false}, {" hi", false}, {"hi ", false}, {"hi\n", false}, {"HI", false},
+		{json.RawMessage(`[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,YQ=="}}]`), true},
+		{json.RawMessage(`[{"type":"text","text":"hi"},{"type":"text","text":"xxx"}]`), false},
+	} {
+		before := calls
+		raw, _ := json.Marshal(map[string]any{"model": p.Alias, "input": tc.input})
+		r := httptest.NewRequest("POST", "/v1/moderations", strings.NewReader(string(raw)))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		app.Handler().ServeHTTP(w, r)
+		var response Response
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Results) != 1 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		attempts := 1
+		if tc.ignored {
+			attempts = 0
+		}
+		if response.Results[0].Audit.KeywordIgnored != tc.ignored || response.AttemptCount != attempts || calls-before != attempts {
+			t.Fatal("incorrect exact ignore routing", tc.input, response, calls-before)
+		}
+	}
+	trialConfig := p.Config
+	trialConfig.KeywordIgnoreMatchMode = "contains"
+	before := calls
+	var trial Response
+	if err := json.Unmarshal(call("POST", "/admin/policies/"+p.ID+"/test", map[string]any{"input": "hi xxx", "config": trialConfig}, 200), &trial); err != nil || !trial.Results[0].Audit.KeywordIgnored || calls != before {
+		t.Fatal("unsaved contains trial not applied", trial, err)
+	}
+	trial = Response{}
+	if err := json.Unmarshal(call("POST", "/admin/policies/"+p.ID+"/test", map[string]any{"input": "hi xxx"}, 200), &trial); err != nil || trial.Results[0].Audit.KeywordIgnored || trial.AttemptCount != 1 || calls != before+1 {
+		t.Fatal("exact miss did not continue trial model audit", trial, err)
+	}
+	trialConfig.KeywordIgnoreMatchMode = "exact"
+	trialConfig.KeywordBlockEnabled, trialConfig.KeywordBlockMatchMode = true, "exact"
+	trialConfig.BlockKeywords = []string{"hi"}
+	before = calls
+	trial = Response{}
+	if err := json.Unmarshal(call("POST", "/admin/policies/"+p.ID+"/test", map[string]any{"input": "hi", "config": trialConfig}, 200), &trial); err != nil || !trial.Results[0].Audit.KeywordBlocked || trial.Results[0].Audit.KeywordIgnored || !trial.Results[0].Flagged || calls != before {
+		t.Fatal("ignore took precedence over block", trial, err)
 	}
 }
 
@@ -159,6 +260,7 @@ func TestKeywordIgnoreProductionTrialLogsAndGuards(t *testing.T) {
 func TestKeywordIgnoreEvaluationZeroBudgetAndScores(t *testing.T) {
 	app, p, call := evaluationTestServer(t)
 	p.Config.KeywordIgnoreEnabled = true
+	p.Config.KeywordIgnoreMatchMode = "exact"
 	p.Config.IgnoreKeywords = []string{"指定短语"}
 	p.Config.Threshold = 0
 	p.Config.Channels = []ChannelBinding{}

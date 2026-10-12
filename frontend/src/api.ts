@@ -72,6 +72,7 @@ export interface Config {
   keyword_block_match_mode?: "contains" | "exact";
   block_keywords?: string[];
   keyword_ignore_enabled?: boolean;
+  keyword_ignore_match_mode?: "contains" | "exact";
   ignore_keywords?: string[];
   store_model_output?: boolean;
   model_output_retention_days?: number;

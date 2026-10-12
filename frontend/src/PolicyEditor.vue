@@ -255,16 +255,40 @@ async function test() {
       />
       <span>关键词忽略</span>
     </label>
-    <label v-if="config.keyword_ignore_enabled">
-      忽略关键词或短语（每行一条，区分大小写）
-      <textarea
-        :value="keywordText"
-        rows="5"
-        :disabled="busy"
-        maxlength="16100"
-        @input="updateKeywords($event, 'ignore')"
-      />
-    </label>
+    <template v-if="config.keyword_ignore_enabled">
+      <div class="segmented" role="group" aria-label="忽略关键词匹配模式">
+        <button
+          type="button"
+          :aria-pressed="config.keyword_ignore_match_mode !== 'exact'"
+          :disabled="busy"
+          @click="config.keyword_ignore_match_mode = 'contains'"
+        >
+          模糊匹配
+        </button>
+        <button
+          type="button"
+          :aria-pressed="config.keyword_ignore_match_mode === 'exact'"
+          :disabled="busy"
+          @click="config.keyword_ignore_match_mode = 'exact'"
+        >
+          完整匹配
+        </button>
+      </div>
+      <label>
+        忽略关键词或短语（每行一条，区分大小写）
+        <textarea
+          :value="keywordText"
+          rows="5"
+          :disabled="busy"
+          maxlength="16100"
+          @input="updateKeywords($event, 'ignore')"
+        />
+      </label>
+      <p class="muted small">
+        模糊匹配：包含任意一条就直接放行。完整匹配：整段输入与某一条完全相同才放行，例如
+        hi 不会匹配 hi xxx；输入首尾空格和换行也参与比较。
+      </p>
+    </template>
     <label
       >审核提示词<textarea
         v-model="config.prompt"

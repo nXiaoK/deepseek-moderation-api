@@ -92,6 +92,7 @@ type PolicySettings struct {
 	KeywordBlockMatchMode    string           `json:"keyword_block_match_mode,omitempty"`
 	BlockKeywords            []string         `json:"block_keywords,omitempty"`
 	KeywordIgnoreEnabled     bool             `json:"keyword_ignore_enabled"`
+	KeywordIgnoreMatchMode   string           `json:"keyword_ignore_match_mode,omitempty"`
 	IgnoreKeywords           []string         `json:"ignore_keywords,omitempty"`
 	StoreModelOutput         *bool            `json:"store_model_output,omitempty"`
 	ModelOutputRetentionDays int              `json:"model_output_retention_days,omitempty"`
@@ -150,6 +151,9 @@ func (c PolicySettings) Validate() error {
 	}
 	if err := validateKeywordList(c.BlockKeywords, "阻止"); err != nil {
 		return err
+	}
+	if c.KeywordIgnoreMatchMode != "" && c.KeywordIgnoreMatchMode != "contains" && c.KeywordIgnoreMatchMode != "exact" {
+		return errors.New("关键词忽略匹配模式必须为 contains 或 exact")
 	}
 	if err := validateKeywordList(c.IgnoreKeywords, "忽略"); err != nil {
 		return err

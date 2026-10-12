@@ -7,7 +7,14 @@ func (c PolicySettings) ignoresKeywords(input string) bool {
 		return false
 	}
 	for _, keyword := range c.IgnoreKeywords {
-		if strings.TrimSpace(keyword) != "" && strings.Contains(input, keyword) {
+		if strings.TrimSpace(keyword) == "" {
+			continue
+		}
+		if c.KeywordIgnoreMatchMode == "exact" {
+			if input == keyword {
+				return true
+			}
+		} else if strings.Contains(input, keyword) {
 			return true
 		}
 	}

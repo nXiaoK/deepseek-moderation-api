@@ -11,6 +11,7 @@ for (const width of [1440, 390]) {
     let saved: Config = {
       ...config,
       keyword_ignore_enabled: true,
+      keyword_ignore_match_mode: "exact",
       ignore_keywords: ["保留忽略词"],
     };
     const policy = () => ({
@@ -100,6 +101,7 @@ for (const width of [1440, 390]) {
     ).toBeDisabled();
     expect(saved.block_keywords).toEqual(["hi", "指定短语"]);
     expect(saved.keyword_block_match_mode).toBe("exact");
+    expect(saved.keyword_ignore_match_mode).toBe("exact");
     expect(saved.ignore_keywords).toEqual(["保留忽略词"]);
     await expect(phrases).toHaveValue("hi\n指定短语");
     await page.reload();
