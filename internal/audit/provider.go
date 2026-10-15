@@ -17,18 +17,36 @@ import (
 
 const ProviderDeepSeek = "deepseek"
 const ProviderGrok = "grok_via_sub2api"
+const ProviderTypeSafe = "typesafe"
 
 const APIFormatResponses = "responses"
 const APIFormatChatCompletions = "chat_completions"
+const APIFormatSystemOne = "systemone"
 
 func validateAPIFormat(format string) error {
-	if format != "" && format != APIFormatResponses && format != APIFormatChatCompletions {
-		return errors.New("API 接口类型必须为 /responses 或 /chat/completions")
+	if format != "" && format != APIFormatResponses && format != APIFormatChatCompletions && format != APIFormatSystemOne {
+		return errors.New("API 接口类型必须为 /responses、/chat/completions 或 /systemone")
+	}
+	return nil
+}
+
+func validateProviderAPIFormat(provider, format string) error {
+	if err := validateAPIFormat(format); err != nil {
+		return err
+	}
+	if provider == ProviderTypeSafe && format != "" && format != APIFormatSystemOne {
+		return errors.New("TypeSafe / Jev 只支持 /systemone 接口")
+	}
+	if provider != ProviderTypeSafe && format == APIFormatSystemOne {
+		return errors.New("/systemone 接口仅用于 TypeSafe / Jev")
 	}
 	return nil
 }
 
 func (c PolicyConfig) apiFormat() string {
+	if c.ProviderID() == ProviderTypeSafe {
+		return APIFormatSystemOne
+	}
 	if c.APIFormat != "" {
 		return c.APIFormat
 	}
@@ -50,9 +68,9 @@ func validateProviderURL(provider, base string) error {
 		return errors.New("连接地址必须为 HTTP(S) 服务根地址或完整 API 地址，不能包含凭据、查询参数或片段")
 	}
 	switch provider {
-	case ProviderDeepSeek:
+	case ProviderDeepSeek, ProviderTypeSafe:
 		if u.Scheme != "https" && u.Scheme != "http" {
-			return errors.New("DeepSeek 连接只支持 HTTP(S)")
+			return errors.New("模型连接只支持 HTTP(S)")
 		}
 	case ProviderGrok:
 		if u.Scheme != "https" && u.Scheme != "http" {
@@ -93,6 +111,16 @@ func providerOrigin(base string) string {
 func (c PolicyConfig) inferenceURL() string {
 	base := normalizeProviderURL(c.BaseURL)
 	u, err := url.Parse(base)
+	if c.ProviderID() == ProviderTypeSafe && err == nil {
+		base = strings.TrimRight(base, "/")
+		if strings.HasSuffix(base, "/systemone") {
+			return base
+		}
+		if u.EscapedPath() == "" {
+			base += "/v1"
+		}
+		return base + "/systemone"
+	}
 	if c.APIFormat != "" && err == nil {
 		if u.EscapedPath() == "" && !(base == "https://api.deepseek.com" && c.APIFormat == APIFormatChatCompletions) {
 			base += "/v1"
@@ -120,6 +148,9 @@ func (c PolicyConfig) officialPricing() bool {
 	return c.ProviderID() == ProviderDeepSeek && providerOrigin(c.BaseURL) == "https://api.deepseek.com"
 }
 func (c PolicyConfig) providerLabel() string {
+	if c.ProviderID() == ProviderTypeSafe {
+		return "TypeSafe/Jev"
+	}
 	if c.ProviderID() == ProviderGrok {
 		return "Grok/sub2api"
 	}

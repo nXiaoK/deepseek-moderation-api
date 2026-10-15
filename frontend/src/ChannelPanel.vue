@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import AppIcon from "./AppIcon.vue";
 import {
   api,
   ignoreAPIError,
+  providerLabel,
+  apiFormatLabel,
   type ModelChannel,
   type Credential,
   type ChannelTestResult,
@@ -40,6 +42,13 @@ const affected = computed(
 const connection = computed(() =>
   props.credentials.find((c) => c.id === form.value.credential_id),
 );
+watch(connection, (value) => {
+  if (value?.provider === "typesafe") {
+    form.value.text_only = true;
+    if (!form.value.id && form.value.model === "deepseek-flash")
+      form.value.model = "jev-latest";
+  }
+});
 const health = (c: ModelChannel) =>
   !c.enabled
     ? "已停用"
@@ -181,10 +190,7 @@ async function remove(c: ModelChannel) {
           <tr v-for="c in channels" :key="c.id">
             <td>
               <strong>{{ c.name }}</strong
-              ><small
-                >{{ c.model }} ·
-                {{ c.provider === "deepseek" ? "DeepSeek" : "Grok" }}</small
-              >
+              ><small>{{ c.model }} · {{ providerLabel(c.provider) }}</small>
               <small v-if="c.text_only">文本模型 · 自动忽略图片</small>
             </td>
             <td>
@@ -303,15 +309,15 @@ async function remove(c: ModelChannel) {
       </p>
       <p>
         模型：<code>{{ testResult.model }}</code> · 接口：{{
-          testResult.api_format === "responses"
-            ? "/responses"
-            : "/chat/completions"
+          apiFormatLabel(testResult.api_format)
         }}
       </p>
       <p>
         耗时 {{ testResult.latency_ms }} ms · 超时
-        {{ testResult.timeout_ms }} ms · 最大输出
-        {{ testResult.max_tokens }} tokens ·
+        {{ testResult.timeout_ms }} ms ·
+        <template v-if="testResult.api_format !== 'systemone'"
+          >最大输出 {{ testResult.max_tokens }} tokens ·</template
+        >
         {{
           testResult.http_status
             ? "HTTP " + testResult.http_status
@@ -361,7 +367,7 @@ async function remove(c: ModelChannel) {
           >
             <option value="">请选择</option>
             <option v-for="c in credentials" :key="c.id" :value="c.id">
-              {{ c.name }} · {{ c.provider === "deepseek" ? "DeepSeek" : "Grok"
+              {{ c.name }} · {{ providerLabel(c.provider)
               }}{{ c.active ? "" : "（已停用）" }}
             </option>
           </select></label
@@ -380,7 +386,7 @@ async function remove(c: ModelChannel) {
             max="30000"
             required
             :disabled="busy" /></label
-        ><label
+        ><label v-if="connection?.provider !== 'typesafe'"
           >最大输出 tokens<input
             v-model.number="form.max_tokens"
             type="number"
@@ -431,12 +437,23 @@ async function remove(c: ModelChannel) {
         ><template v-if="connection.provider === 'grok_via_sub2api'"
           ><br />Grok 使用连接中选择的 API
           接口类型。配置模型单价后，文本请求可参与人民币预算；无单价的调用费用需核对。</template
+        ><template v-if="connection.provider === 'typesafe'"
+          ><br />Jev 使用结构化审核问题，不生成文字解释。请在审核策略配置 Jev
+          问题；配置人民币输入单价、输出单价设为 0
+          后，可参与预算和批量评测。</template
         >
       </p>
       <label class="check-row">
-        <input v-model="form.text_only" type="checkbox" :disabled="busy" />
+        <input
+          v-model="form.text_only"
+          type="checkbox"
+          :disabled="busy || connection?.provider === 'typesafe'"
+        />
         <span>此模型为文本模型</span>
       </label>
+      <p v-if="connection?.provider === 'typesafe'" class="hint">
+        Jev 固定为文本模型，图片不会提交到 TypeSafe。
+      </p>
       <p class="hint">
         勾选后自动忽略图片，只审核文本；没有文本时不会调用此通道。未勾选时，将文本和图片一起发送给模型，请使用支持图片的模型。含图请求体最多
         32 MiB。

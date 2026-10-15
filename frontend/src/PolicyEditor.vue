@@ -5,6 +5,7 @@ import {
   api,
   encodeJSONBody,
   ignoreAPIError,
+  DEFAULT_TYPESAFE_QUESTION,
   type Config,
   type Policy,
   type ModelChannel,
@@ -186,7 +187,9 @@ async function test() {
     <div class="panel-heading">
       <div>
         <h2>审核规则</h2>
-        <p class="muted small">所有绑定模型使用相同提示词与判定阈值。</p>
+        <p class="muted small">
+          聊天模型使用审核提示词，Jev 使用独立审核问题；所有通道共用拦截阈值。
+        </p>
       </div>
     </div>
     <div class="form-grid">
@@ -303,6 +306,20 @@ async function test() {
         >评分 0～1，原因字数上限在系统设置中配置；有效结果直接返回。</span
       >
     </div>
+    <label>
+      Jev 审核问题（是 = 可以安全提交）
+      <textarea
+        v-model="config.typesafe_question"
+        :placeholder="DEFAULT_TYPESAFE_QUESTION"
+        rows="4"
+        maxlength="64000"
+        :disabled="busy"
+      />
+    </label>
+    <p class="hint">
+      留空使用上方默认问题。风险评分 = 1 − 可以安全提交的概率，评分 ≥
+      阈值时拦截。仅用于 TypeSafe / Jev 通道，返回的原因是程序判定摘要。
+    </p>
     <div class="form-grid">
       <label
         >结果缓存（秒）<input

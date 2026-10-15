@@ -1,4 +1,24 @@
-export type Provider = "deepseek" | "grok_via_sub2api";
+export type Provider = "deepseek" | "grok_via_sub2api" | "typesafe";
+export const DEFAULT_TYPESAFE_QUESTION =
+  "这段话是否可以提交给llm进行深度推理，不会涉及到风险，比如：色情、暴力、破解、诱导?";
+export const providerLabel = (provider?: string) =>
+  provider === "typesafe"
+    ? "TypeSafe / Jev"
+    : provider === "grok_via_sub2api"
+      ? "Grok / sub2api"
+      : "DeepSeek";
+export const defaultAPIFormat = (provider: Provider): APIFormat =>
+  provider === "typesafe"
+    ? "systemone"
+    : provider === "deepseek"
+      ? "chat_completions"
+      : "responses";
+export const apiFormatLabel = (format?: string) =>
+  format === "systemone"
+    ? "/systemone"
+    : format === "responses"
+      ? "/responses"
+      : "/chat/completions";
 export interface RuntimeLimits {
   model_concurrency: number;
   request_concurrency: number;
@@ -68,6 +88,7 @@ export interface ChannelBinding {
   enabled: boolean;
 }
 export interface Config {
+  typesafe_question?: string;
   keyword_block_enabled?: boolean;
   keyword_block_match_mode?: "contains" | "exact";
   block_keywords?: string[];
@@ -165,7 +186,7 @@ export interface AuditAttempt {
   usage: Usage;
   cost?: CostView;
 }
-export type APIFormat = "" | "responses" | "chat_completions";
+export type APIFormat = "" | "responses" | "chat_completions" | "systemone";
 export interface Credential {
   api_format?: APIFormat;
   provider: Provider;

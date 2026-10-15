@@ -13,7 +13,7 @@ import (
 
 func TestUpstreamErrorsRedactActualCredential(t *testing.T) {
 	t.Setenv("AUDIT_SUB2API_ORIGINS", "https://gateway.example")
-	for _, provider := range []string{ProviderDeepSeek, ProviderGrok} {
+	for _, provider := range []string{ProviderDeepSeek, ProviderGrok, ProviderTypeSafe} {
 		for _, credential := range []string{"xai-fake-review-credential", "sk_fake_gateway_key", "arbitrary/credential+123="} {
 			for _, field := range []string{"detail", "message"} {
 				t.Run(provider+"/"+credential+"/"+field, func(t *testing.T) {

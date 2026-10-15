@@ -288,6 +288,9 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 	}
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com"
+		if provider == ProviderTypeSafe {
+			baseURL = "https://api.typesafe.ai"
+		}
 	}
 	if err := validateProviderURL(provider, baseURL); err != nil {
 		return "", problem(400, "invalid_connection", err.Error())
@@ -297,7 +300,10 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 	if len(apiFormats) > 0 {
 		apiFormat = apiFormats[0]
 	}
-	if err := validateAPIFormat(apiFormat); err != nil {
+	if provider == ProviderTypeSafe && apiFormat == "" {
+		apiFormat = APIFormatSystemOne
+	}
+	if err := validateProviderAPIFormat(provider, apiFormat); err != nil {
 		return "", problem(400, "invalid_connection", err.Error())
 	}
 
@@ -309,7 +315,7 @@ func (s *Store) SaveProviderCredential(ctx context.Context, actor, id, name, key
 		id = randomToken("cred_")
 	}
 	if create && key == "" {
-		return "", problem(400, "key_required", "请输入 DeepSeek API Key")
+		return "", problem(400, "key_required", "请输入模型 API Key")
 	}
 	err := s.mutate(ctx, actor, "credential.update", id, func(tx *sql.Tx) error {
 		if !create {

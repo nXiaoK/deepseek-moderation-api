@@ -5,6 +5,7 @@ import {
   APIError,
   ignoreAPIError,
   downloadFile,
+  DEFAULT_TYPESAFE_QUESTION,
   type Config,
   type Policy,
   type ModelChannel,
@@ -104,6 +105,7 @@ const runForm = ref<{
   retries: number;
   max_cost_cny: string;
   prompt: string;
+  typesafe_question: string;
   threshold: number;
 } | null>(null);
 const importInput = ref<HTMLInputElement>(),
@@ -385,12 +387,15 @@ function newRun() {
     retries: 2,
     max_cost_cny: "5",
     prompt: p.config.prompt,
+    typesafe_question: p.config.typesafe_question || "",
     threshold: p.config.threshold,
   };
 }
 function resetRunConfig() {
   if (runForm.value && policy.value) {
     runForm.value.prompt = policy.value.config.prompt;
+    runForm.value.typesafe_question =
+      policy.value.config.typesafe_question || "";
     runForm.value.threshold = policy.value.config.threshold;
     runForm.value.channel_ids = [""];
   }
@@ -406,7 +411,12 @@ async function startRun() {
       {
         name: f.name,
         policy_id: f.policy_id,
-        config: { ...p.config, prompt: f.prompt, threshold: f.threshold },
+        config: {
+          ...p.config,
+          prompt: f.prompt,
+          typesafe_question: f.typesafe_question,
+          threshold: f.threshold,
+        },
         sample_ids: selected.value,
         channel_ids: f.channel_ids,
         repetitions: f.repetitions,
@@ -875,6 +885,10 @@ onBeforeUnmount(() => {
           {{ detail.retries ?? 0 }} 次
         </p>
         <pre class="input-detail">{{ detail.config.prompt }}</pre>
+        <p class="muted small">Jev 审核问题（是 = 可以安全提交）</p>
+        <pre class="input-detail">{{
+          detail.config.typesafe_question || DEFAULT_TYPESAFE_QUESTION
+        }}</pre>
       </details>
     </template>
 
@@ -1020,6 +1034,14 @@ onBeforeUnmount(() => {
               required
               rows="7"
               maxlength="64000"
+            />
+          </label>
+          <label
+            >Jev 评测问题（是 = 可以安全提交）<textarea
+              v-model="runForm.typesafe_question"
+              rows="4"
+              maxlength="64000"
+              :placeholder="DEFAULT_TYPESAFE_QUESTION"
             />
           </label>
           <p class="hint">

@@ -50,7 +50,7 @@ func (c PolicyConfig) Validate() error {
 	if err := validateProviderURL(c.ProviderID(), c.BaseURL); err != nil {
 		return err
 	}
-	if err := validateAPIFormat(c.APIFormat); err != nil {
+	if err := validateProviderAPIFormat(c.ProviderID(), c.APIFormat); err != nil {
 		return err
 	}
 	if len(c.ConnectionRevision) > 100 {
@@ -88,6 +88,7 @@ type ChannelBinding struct {
 	Enabled   bool   `json:"enabled"`
 }
 type PolicySettings struct {
+	TypeSafeQuestion         string           `json:"typesafe_question,omitempty"`
 	KeywordBlockEnabled      bool             `json:"keyword_block_enabled"`
 	KeywordBlockMatchMode    string           `json:"keyword_block_match_mode,omitempty"`
 	BlockKeywords            []string         `json:"block_keywords,omitempty"`
@@ -112,7 +113,14 @@ type PolicySettings struct {
 
 func DefaultSettings() PolicySettings {
 	storeOutput := false
-	return PolicySettings{StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, MaxAttemptsPerPriority: 2, PriorityTimeoutMS: 4000, FailureThreshold: 3, FailureCooldownMinutes: 30, Channels: []ChannelBinding{}}
+	return PolicySettings{TypeSafeQuestion: DefaultTypeSafeQuestion, StoreModelOutput: &storeOutput, ModelOutputRetentionDays: 7, Prompt: InitialPrompt, Threshold: .8, RetentionDays: 30, TotalTimeoutMS: 9000, MaxAttempts: 3, MaxAttemptsPerPriority: 2, PriorityTimeoutMS: 4000, FailureThreshold: 3, FailureCooldownMinutes: 30, Channels: []ChannelBinding{}}
+}
+
+func (c PolicySettings) typeSafeQuestion() string {
+	if c.TypeSafeQuestion == "" {
+		return DefaultTypeSafeQuestion
+	}
+	return c.TypeSafeQuestion
 }
 
 // Zero preserves compatibility with policy JSON saved before these settings existed.
@@ -146,6 +154,9 @@ func (c PolicySettings) retainModelOutput() bool {
 	return c.StoreModelOutput == nil || *c.StoreModelOutput
 }
 func (c PolicySettings) Validate() error {
+	if strings.TrimSpace(c.typeSafeQuestion()) == "" || utf8.RuneCountInString(c.typeSafeQuestion()) > 64000 {
+		return errors.New("Jev 审核问题必须为 1～64000 个字符；留空使用默认问题")
+	}
 	if c.KeywordBlockMatchMode != "" && c.KeywordBlockMatchMode != "contains" && c.KeywordBlockMatchMode != "exact" {
 		return errors.New("关键词阻止匹配模式必须为 contains 或 exact")
 	}
@@ -223,7 +234,11 @@ type ModelChannel struct {
 }
 
 func (c ModelChannel) Inference(r PolicySettings) PolicyConfig {
-	return PolicyConfig{APIFormat: c.APIFormat, TextOnly: c.TextOnly, Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: r.Prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
+	prompt := r.Prompt
+	if c.Provider == ProviderTypeSafe {
+		prompt = r.typeSafeQuestion()
+	}
+	return PolicyConfig{APIFormat: c.APIFormat, TextOnly: c.TextOnly || c.Provider == ProviderTypeSafe, Provider: c.Provider, Model: c.Model, BaseURL: c.BaseURL, CredentialID: c.CredentialID, TimeoutMS: c.TimeoutMS, MaxTokens: c.MaxTokens, Prompt: prompt, Threshold: r.Threshold, ResultCacheTTL: r.ResultCacheTTL, StoreInput: r.StoreInput, RetentionDays: r.RetentionDays, ConnectionRevision: c.CacheEpoch}
 }
 
 type AuditAttempt struct {

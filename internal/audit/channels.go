@@ -15,6 +15,9 @@ const channelColumns = `c.id,c.name,c.model,c.credential_id,c.timeout_ms,c.max_t
 func scanChannel(row scanner) (ModelChannel, error) {
 	var c ModelChannel
 	err := row.Scan(&c.ID, &c.Name, &c.Model, &c.CredentialID, &c.TimeoutMS, &c.MaxTokens, &c.MaxConcurrency, &c.Enabled, &c.Revision, &c.CacheEpoch, &c.Provider, &c.BaseURL, &c.CredentialActive, &c.TextOnly, &c.RPM, &c.APIFormat)
+	if c.Provider == ProviderTypeSafe {
+		c.TextOnly = true
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -160,6 +163,9 @@ func (s *Store) SaveChannel(ctx context.Context, actor string, c ModelChannel) (
 		}
 		if c.Enabled && !c.CredentialActive {
 			return problem(400, "credential_required", "通道启用前请先启用连接密钥")
+		}
+		if c.Provider == ProviderTypeSafe {
+			c.TextOnly = true
 		}
 		if err = c.Inference(DefaultSettings()).Validate(); err != nil {
 			return problem(400, "invalid_channel", err.Error())

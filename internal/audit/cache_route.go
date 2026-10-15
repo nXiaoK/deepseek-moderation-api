@@ -18,6 +18,7 @@ func cacheImages(c routeCandidate, images []AuditImage) []AuditImage {
 }
 func (s *Store) prepareRouteCacheKeys(client string, p Policy, candidates []routeCandidate, input string, images []AuditImage) {
 	promptDigest := digest(p.Config.Prompt)
+	typeSafePromptDigest := digest(p.Config.typeSafeQuestion())
 	textDigest := s.cacheInputDigest(input, nil)
 	imageDigest := textDigest
 	cacheableImages := imageInputCacheable(images)
@@ -33,7 +34,11 @@ func (s *Store) prepareRouteCacheKeys(client string, p Policy, candidates []rout
 		if c.channel.TextOnly {
 			inputDigest = textDigest
 		}
-		c.cacheKey = s.assessmentCacheKeyFromInput(client, p.ID, c.cfg, int(p.Revision), c.key, inputDigest, promptDigest)
+		candidatePromptDigest := promptDigest
+		if c.cfg.ProviderID() == ProviderTypeSafe {
+			candidatePromptDigest = typeSafePromptDigest
+		}
+		c.cacheKey = s.assessmentCacheKeyFromInput(client, p.ID, c.cfg, int(p.Revision), c.key, inputDigest, candidatePromptDigest)
 	}
 }
 func (s *Server) cacheLock(ctx context.Context, candidates []routeCandidate) (func(), error) {

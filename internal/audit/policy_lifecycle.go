@@ -24,6 +24,8 @@ func policyChangeSummary(before, after PolicySettings) map[string]any {
 		}
 		if key == "prompt" {
 			changes[key] = map[string]any{"before_sha256": digest(before.Prompt), "after_sha256": digest(after.Prompt), "characters": utf8.RuneCountInString(after.Prompt)}
+		} else if key == "typesafe_question" {
+			changes[key] = map[string]any{"before_sha256": digest(before.typeSafeQuestion()), "after_sha256": digest(after.typeSafeQuestion()), "characters": utf8.RuneCountInString(after.typeSafeQuestion())}
 		} else {
 			changes[key] = value
 		}

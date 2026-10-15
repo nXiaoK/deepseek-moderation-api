@@ -52,7 +52,7 @@ func upstreamCallError(err error, cfg PolicyConfig) error {
 	return problem(503, "upstream_unavailable", cfg.providerLabel()+" 暂时不可用")
 }
 func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string, images ...AuditImage) (Assessment, Usage, string, error) {
-	if cfg.TextOnly {
+	if cfg.TextOnly || cfg.ProviderID() == ProviderTypeSafe {
 		images = nil
 	}
 	if strings.TrimSpace(input) == "" && len(images) == 0 {
@@ -72,6 +72,9 @@ func (e *Engine) Assess(ctx context.Context, cfg PolicyConfig, key, input string
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
+	if cfg.ProviderID() == ProviderTypeSafe {
+		return e.assessTypeSafe(ctx, cfg, key, input)
+	}
 	if cfg.apiFormat() == APIFormatResponses {
 		return e.assessGrok(ctx, cfg, key, input, images...)
 	}

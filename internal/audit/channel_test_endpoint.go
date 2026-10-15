@@ -63,6 +63,9 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) error {
 	cfg := c.Inference(DefaultSettings())
 	cfg.ReasonMaxChars = settings.ReasonMaxChars
 	cfg.Prompt, cfg.ResultCacheTTL = channelTestPrompt, 0
+	if c.Provider == ProviderTypeSafe {
+		cfg.Prompt = DefaultTypeSafeQuestion
+	}
 	started := time.Now()
 	result := ChannelTestResult{ChannelID: c.ID, ChannelName: c.Name, Model: c.Model, APIFormat: cfg.apiFormat(), Endpoint: cfg.inferenceURL(), TimeoutMS: cfg.TimeoutMS, MaxTokens: cfg.MaxTokens}
 	key := ""
@@ -137,7 +140,7 @@ func diagnosticText(value, key string) string {
 
 func channelTestHint(code string, status int) string {
 	if status == 404 || status == 405 {
-		return "检查实际请求地址和接口类型；基础地址不要重复包含 /responses 或 /chat/completions。确认该路径及模型在供应商处可用。"
+		return "检查实际请求地址和接口类型；基础地址不要重复包含接口路径。确认该路径及模型在供应商处可用。"
 	}
 	switch code {
 	case "upstream_auth_failed":
@@ -147,7 +150,7 @@ func channelTestHint(code string, status int) string {
 	case "upstream_config_invalid":
 		return "根据上游错误检查模型名称、接口类型和输出 token 上限，确认所选模型支持该接口。"
 	case "invalid_model_response":
-		return "上游已返回响应，但未得到完整审核结果；检查接口类型、模型是否支持 JSON 输出，或增加最大输出 tokens。"
+		return "上游已返回响应，但未得到完整审核结果；检查接口类型和模型。TypeSafe 需返回完整的 Noul 答案；聊天模型需支持 JSON 输出且未被截断。"
 	case "upstream_timeout":
 		return "可增加该通道的单次超时（最多 30000 ms）；同时检查服务器到上游的网络连接。"
 	case "upstream_unavailable":

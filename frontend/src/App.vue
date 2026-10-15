@@ -35,6 +35,10 @@ import {
   setUnauthorizedHandler,
   ignoreAPIError,
   downloadFile,
+  providerLabel,
+  defaultAPIFormat,
+  apiFormatLabel,
+  type APIFormat,
   type AuditLog,
   type ClientKey,
   type Config,
@@ -166,9 +170,7 @@ const creating = ref(false),
   copySource = ref("");
 const credentialProvider = ref<Provider>("deepseek"),
   credentialBaseURL = ref("https://api.deepseek.com"),
-  credentialAPIFormat = ref<"" | "responses" | "chat_completions">(
-    "chat_completions",
-  );
+  credentialAPIFormat = ref<APIFormat>("chat_completions");
 const credentialName = ref(""),
   credentialSecret = ref(""),
   credentialEditID = ref("");
@@ -388,8 +390,7 @@ function clearSession() {
   newToken.value = "";
   credentialSecret.value = "";
   credentialEditID.value = "";
-  credentialAPIFormat.value =
-    credentialProvider.value === "deepseek" ? "chat_completions" : "responses";
+  credentialAPIFormat.value = defaultAPIFormat(credentialProvider.value);
   credentialName.value = "";
   currentPassword.value = "";
   newPassword.value = "";
@@ -510,10 +511,7 @@ async function saveCredential() {
     );
     credentials.value = await api("/admin/credentials");
     credentialEditID.value = "";
-    credentialAPIFormat.value =
-      credentialProvider.value === "deepseek"
-        ? "chat_completions"
-        : "responses";
+    credentialAPIFormat.value = defaultAPIFormat(credentialProvider.value);
     credentialName.value = "";
     credentialSecret.value = "";
     notice.value = "模型密钥已加密保存。";
@@ -546,10 +544,7 @@ async function deleteCredential(c: Credential) {
     credentials.value = credentials.value.filter((item) => item.id !== c.id);
     if (credentialEditID.value === c.id) {
       credentialEditID.value = "";
-      credentialAPIFormat.value =
-        credentialProvider.value === "deepseek"
-          ? "chat_completions"
-          : "responses";
+      credentialAPIFormat.value = defaultAPIFormat(credentialProvider.value);
       credentialName.value = "";
       credentialSecret.value = "";
     }
@@ -1120,21 +1115,24 @@ window.addEventListener("beforeunload", (e) => {
                       credentialBaseURL =
                         credentialProvider === 'deepseek'
                           ? 'https://api.deepseek.com'
-                          : '';
+                          : credentialProvider === 'typesafe'
+                            ? 'https://api.typesafe.ai'
+                            : '';
                       credentialAPIFormat =
-                        credentialProvider === 'deepseek'
-                          ? 'chat_completions'
-                          : 'responses';
+                        defaultAPIFormat(credentialProvider);
                     "
                   >
                     <option value="deepseek">DeepSeek（官方 / 第三方）</option>
                     <option value="grok_via_sub2api">Grok · sub2api API</option>
+                    <option value="typesafe">TypeSafe / Jev</option>
                   </select></label
                 ><label
                   >{{
                     credentialProvider === "deepseek"
                       ? "DeepSeek API 地址"
-                      : "sub2api API 地址"
+                      : credentialProvider === "typesafe"
+                        ? "TypeSafe API 地址"
+                        : "sub2api API 地址"
                   }}<input
                     v-model="credentialBaseURL"
                     type="url"
@@ -1142,7 +1140,9 @@ window.addEventListener("beforeunload", (e) => {
                     :placeholder="
                       credentialProvider === 'deepseek'
                         ? 'https://api.deepseek.com 或 https://api.cline.bot/api/v1'
-                        : 'https://sub2api.example.com/v1'
+                        : credentialProvider === 'typesafe'
+                          ? 'https://api.typesafe.ai'
+                          : 'https://sub2api.example.com/v1'
                     "
                   /><small class="muted">
                     填写 API 基础地址，例如
@@ -1157,10 +1157,11 @@ window.addEventListener("beforeunload", (e) => {
                 <label
                   >API 接口类型<select
                     v-model="credentialAPIFormat"
-                    :disabled="busy"
+                    :disabled="busy || credentialProvider === 'typesafe'"
                   >
                     <option
                       v-if="
+                        credentialProvider !== 'typesafe' &&
                         credentialEditID &&
                         credentials.find((c) => c.id === credentialEditID)
                           ?.api_format !== 'responses' &&
@@ -1171,8 +1172,18 @@ window.addEventListener("beforeunload", (e) => {
                     >
                       保持原调用方式（旧连接）
                     </option>
-                    <option value="responses">/responses</option>
-                    <option value="chat_completions">/chat/completions</option>
+                    <option
+                      v-if="credentialProvider === 'typesafe'"
+                      value="systemone"
+                    >
+                      /systemone
+                    </option>
+                    <template v-else
+                      ><option value="responses">/responses</option>
+                      <option value="chat_completions">
+                        /chat/completions
+                      </option></template
+                    >
                   </select>
                   <small v-if="credentialAPIFormat === ''" class="muted"
                     >保留旧连接的地址与请求格式。改选接口类型时，请将上方地址填写为基础地址，不包含
@@ -1189,7 +1200,9 @@ window.addEventListener("beforeunload", (e) => {
                   >{{
                     credentialProvider === "deepseek"
                       ? "DeepSeek API Key"
-                      : "sub2api API Key"
+                      : credentialProvider === "typesafe"
+                        ? "TypeSafe API Key"
+                        : "sub2api API Key"
                   }}<input
                     v-model="credentialSecret"
                     type="password"
@@ -1205,10 +1218,7 @@ window.addEventListener("beforeunload", (e) => {
                   type="button"
                   @click="
                     credentialEditID = '';
-                    credentialAPIFormat =
-                      credentialProvider === 'deepseek'
-                        ? 'chat_completions'
-                        : 'responses';
+                    credentialAPIFormat = defaultAPIFormat(credentialProvider);
                     credentialName = '';
                     credentialSecret = '';
                   "
@@ -1224,25 +1234,17 @@ window.addEventListener("beforeunload", (e) => {
             <section class="panel">
               <div class="panel-heading"><h2>已配置密钥</h2></div>
               <div v-if="!credentials.length" class="empty">
-                添加 DeepSeek 或 sub2api Grok 连接密钥。
+                添加 DeepSeek、sub2api Grok 或 TypeSafe / Jev 连接密钥。
               </div>
               <div v-for="c in credentials" :key="c.id" class="credential-row">
                 <div>
                   <strong>{{ c.name }}</strong>
                   <p class="muted small">
-                    {{
-                      c.provider === "grok_via_sub2api"
-                        ? "Grok / sub2api"
-                        : "DeepSeek"
-                    }}
+                    {{ providerLabel(c.provider) }}
                     · {{ c.base_url }}
                     <span v-if="c.api_format">
                       ·
-                      {{
-                        c.api_format === "responses"
-                          ? "/responses"
-                          : "/chat/completions"
-                      }}</span
+                      {{ apiFormatLabel(c.api_format) }}</span
                     >
                   </p>
                   <p>
@@ -1840,11 +1842,7 @@ window.addEventListener("beforeunload", (e) => {
         </dd>
         <dt>审核模型</dt>
         <dd v-if="detail.model">
-          {{
-            detail.provider === "grok_via_sub2api"
-              ? "Grok / sub2api"
-              : "DeepSeek"
-          }}
+          {{ providerLabel(detail.provider) }}
           · {{ detail.model }}
         </dd>
         <dd v-else>未调用模型</dd>
